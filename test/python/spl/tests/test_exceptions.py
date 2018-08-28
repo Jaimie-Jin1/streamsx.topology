@@ -7,6 +7,7 @@ import sys
 import itertools
 import tempfile
 import os
+import uuid
 
 from streamsx.topology.topology import *
 from streamsx.topology.tester import Tester
@@ -27,7 +28,7 @@ def _create_tf():
 class TestBaseExceptions(unittest.TestCase):
     """ Test exceptions in callables
     """
-    _multiprocess_can_split_ = False
+    _multiprocess_can_split_ = True
 
     @classmethod
     def setUpClass(cls):
@@ -57,10 +58,8 @@ class TestExceptions(TestBaseExceptions):
 
     def _run_app(self, kind, opi='M'):
         schema = 'tuple<rstring a, int32 b>'
-        topo = Topology()
+        topo = Topology('TESPL' + str(uuid.uuid4().hex))
         streamsx.spl.toolkit.add_toolkit(topo, stu._tk_dir('testtkpy'))
-        s = topo.source(range(13))
-
         if opi == 'M':
             data = [1,2,3]
             se = topo.source(data)
@@ -86,9 +85,7 @@ class TestExceptions(TestBaseExceptions):
             res = None
 
         tester = Tester(topo)
-        tester.tuple_count(s, 13)
-        if res is not None:
-            tester.tuple_count(res, 0)
+        tester.run_for(3)
         ok = tester.test(self.test_ctxtype, self.test_config, assert_on_fail=False)
         self.assertFalse(ok)
 
@@ -159,7 +156,7 @@ class TestSuppressExceptions(TestBaseExceptions):
 
     def _run_app(self, kind, e, opi='M'):
         schema = 'tuple<rstring a, int32 b>'
-        topo = Topology()
+        topo = Topology('TSESPL' + str(uuid.uuid4().hex))
         streamsx.spl.toolkit.add_toolkit(topo, stu._tk_dir('testtkpy'))
 
         if opi == 'M':
@@ -250,6 +247,11 @@ class TestSuppressExceptions(TestBaseExceptions):
         self.assertEqual('__exit__\n', content[5])
 
 class TestSuppressMetric(TestBaseExceptions):
+    @classmethod
+    def setUpClass(cls):
+        """Extract Python operators in toolkit"""
+        stu._extract_tk('testtkpy')
+
     def setUp(self):
         self.tf = None
         Tester.setup_distributed(self)
