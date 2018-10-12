@@ -1,13 +1,5 @@
-/* Additional includes go here */
-
-#include "splpy.h"
-#include "splpy_funcop.h"
-
-using namespace streamsx::topology;
-
 <%SPL::CodeGen::implementationPrologue($model);%>
 
-@include "../../opt/python/codegen/pysplenablecheckpointing.cgt"
 @include "../pyspltuple.cgt"
 
 <%
@@ -26,7 +18,6 @@ using namespace streamsx::topology;
 #define SPLPY_AGGREGATE(f, v, r, occ) \
     streamsx::topology::Splpy::pyTupleMap(f, v, r)
 
-// Constructor
 MY_OPERATOR::MY_OPERATOR() :
    funcop_(NULL),
    pyInStyleObj_(NULL),
@@ -67,10 +58,12 @@ MY_OPERATOR::MY_OPERATOR() :
     }
 <%
     } 
+
+    
  }
 %>
 
-    funcop_ = new SplpyFuncOp(this, out_wrapfn);
+    funcop_ = new SplpyFuncOp(this, SPLPY_CALLABLE_STATEFUL, out_wrapfn);
 
 @include "../pyspltuple_constructor.cgt"
     
@@ -83,10 +76,11 @@ MY_OPERATOR::MY_OPERATOR() :
     loads = SplpyGeneral::loadFunction("json", "loads");
     <% } %>
     }
-
+#if SPLPY_OP_STATEFUL == 1
+   this->getContext().registerStateHandler(*this);
+#endif
 }
 
-// Destructor
 MY_OPERATOR::~MY_OPERATOR() 
 {
   delete funcop_;
@@ -94,26 +88,21 @@ MY_OPERATOR::~MY_OPERATOR()
   <% if (($pystyle eq 'json') || ($pystyle eq 'pickle')) {%>
   {
       SplpyGIL lock;
-      if (loads != NULL){
-      	 Py_DECREF(loads);
-      }
+      Py_CLEAR(loads);
   }
   <% } %>
 }
 
-// Notify pending shutdown
 void MY_OPERATOR::prepareToShutdown() 
 {
-    AutoLock stateLock(funcop_);
     funcop_->prepareToShutdown();
 }
 
-// Tuple processing for non-mutating ports
 void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
 {
 @include "../pyspltuple2value.cgt"
 
-  AutoLock stateLock(funcop_);
+  OptionalAutoLock stateLock(this);
 
   PyObject *python_value;
 
@@ -171,6 +160,8 @@ void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
 void MY_OPERATOR::process(Punctuation const & punct, uint32_t port)
 {
 <% if ($window->isTumbling()) {%>
+    OptionalAutoLock stateLock(this);
+
    // Aggregate the remaining contents if there are some.
    if (punct == Punctuation::FinalMarker) {
        SPL::AutoWindowDataAcquirer<PyObject *> awd(window_);
@@ -215,49 +206,49 @@ void MY_OPERATOR::onWindowTriggerEvent(Window<PyObject *> & window, Window<PyObj
     }
   OPort0Type otuple;
 
-  try {
+  {
+    try {
   
-  if (SPLPY_AGGREGATE(funcop_->callable(), items,
-       otuple.get_<%=$model->getOutputPortAt(0)->getAttributeAt(0)->getName()%>(), occ_)){  
-     submit(otuple, 0);
+      if (SPLPY_AGGREGATE(funcop_->callable(), items,
+        otuple.get_<%=$model->getOutputPortAt(0)->getAttributeAt(0)->getName()%>(), occ_)){  
+        submit(otuple, 0);
+      }  
+    } catch (const streamsx::topology::SplpyExceptionInfo& excInfo) {
+      SPLPY_OP_HANDLE_EXCEPTION_INFO_GIL(excInfo);
+      return;
+    }
+    submit(Punctuation::WindowMarker, 0);
   }
-  } catch (const streamsx::topology::SplpyExceptionInfo& excInfo) {
-     SPLPY_OP_HANDLE_EXCEPTION_INFO_GIL(excInfo);
-     return;
-  }
-  submit(Punctuation::WindowMarker, 0);
 }
 
 // ##################################
 // End Window Event Handler Overrides
 // ##################################
 
-
-namespace SPL{
-    Checkpoint & operator <<(Checkpoint &ostr, const PyObject  & obj){
-        return ostr;
-    }
-
-    Checkpoint & operator >>(Checkpoint &ostr, const PyObject  & obj){
-        return ostr;
-    }
-
-    ByteBuffer<Checkpoint> & operator<<(ByteBuffer<Checkpoint> & ckpt, PyObject * obj){
-        return ckpt;
-    }
-
-
-    ByteBuffer<Checkpoint> & operator>>(ByteBuffer<Checkpoint> & ckpt, PyObject * obj){
-        return ckpt;
-    }
-
- }
-
-std::ostream & operator <<(std::ostream &ostr, const PyObject  & obj){
-    return ostr;
+#if SPLPY_OP_STATEFUL == 1
+void MY_OPERATOR::drain() {
+    SPLAPPTRC(L_TRACE, "drain: enter", "python");
+    window_.drain();
+    SPLAPPTRC(L_TRACE, "drain: exit", "python");
 }
 
-std::ostream & operator >>(std::ostream &ostr, const PyObject  & obj){
-    return ostr;
+void MY_OPERATOR::checkpointExtra(SPL::Checkpoint & ckpt) {
+    SPLAPPTRC(L_TRACE, "checkpointExtra: enter", "python");
+    window_.checkpoint(ckpt);
+    SPLAPPTRC(L_TRACE, "checkpointExtra: exit", "python");
 }
+
+void MY_OPERATOR::resetExtra(SPL::Checkpoint & ckpt) {
+    SPLAPPTRC(L_TRACE, "resetExtra", "python");
+    window_.reset(ckpt);
+    SPLAPPTRC(L_TRACE, "resetExtra: exit", "python");
+}
+
+void MY_OPERATOR::resetToInitialStateExtra() {
+    SPLAPPTRC(L_TRACE, "resetToInitialStateExtra: enter", "python");
+    window_.resetToInitialState();
+    SPLAPPTRC(L_TRACE, "resetToInitialStateExtra: exit", "python");
+}
+#endif
+
 <%SPL::CodeGen::implementationEpilogue($model);%>

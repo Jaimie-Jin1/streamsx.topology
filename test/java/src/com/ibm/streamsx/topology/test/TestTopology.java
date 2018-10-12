@@ -12,9 +12,12 @@ import static org.junit.Assume.assumeTrue;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -76,24 +79,23 @@ public class TestTopology {
     
     @Before
     public void setupConfig() {
-           
-        if (getTesterType() == Type.STANDALONE_TESTER || getTesterType() == Type.DISTRIBUTED_TESTER) {
-                       
-            File agentJar = new File(System.getProperty("user.home"), ".ant/lib/jacocoagent.jar");
-            if (agentJar.exists()) {
-                List<String> vmArgs = new ArrayList<>();
-                String now = Long.toHexString(System.currentTimeMillis());
-                String destFile = "jacoco_" + getTesterType().name() + now + ".exec";
-     
-                
-                String arg = "-javaagent:"
-                        + agentJar.getAbsolutePath()
-                        + "=destfile="
-                        + destFile;
-                vmArgs.add(arg);
-                config.put(ContextProperties.VMARGS, vmArgs);
-            }
-        }
+    	
+		if (Boolean.getBoolean("topology.test.coverage")) {
+
+			if (getTesterType() == Type.STANDALONE_TESTER || getTesterType() == Type.DISTRIBUTED_TESTER) {
+
+				File agentJar = new File(System.getProperty("user.home"), ".ant/lib/jacocoagent.jar");
+				if (agentJar.exists()) {
+					List<String> vmArgs = new ArrayList<>();
+					String now = Long.toHexString(System.currentTimeMillis());
+					String destFile = "jacoco_" + getTesterType().name() + now + ".exec";
+
+					String arg = "-javaagent:" + agentJar.getAbsolutePath() + "=destfile=" + destFile;
+					vmArgs.add(arg);
+					config.put(ContextProperties.VMARGS, vmArgs);
+				}
+			}
+		}
             
         // Look for a different compiler
         String differentCompile = System.getProperty(ContextProperties.COMPILE_INSTALL_DIR);
@@ -189,13 +191,13 @@ public class TestTopology {
      */
     public <T,S> TStream<T> addStartupDelay(TStream<T> stream) {
          
-        if (getTesterType() == Type.DISTRIBUTED_TESTER) {
+        if (getTesterType() == Type.DISTRIBUTED_TESTER || getTesterType() == Type.STREAMING_ANALYTICS_SERVICE_TESTER) {
             return stream.modify(new InitialDelay<T>(getStartupDelay()*1000L));
         }
         return stream;
     }
     public SPLStream addStartupDelay(SPLStream stream) {
-        if (getTesterType() == Type.DISTRIBUTED_TESTER) {
+        if (getTesterType() == Type.DISTRIBUTED_TESTER  || getTesterType() == Type.STREAMING_ANALYTICS_SERVICE_TESTER) {
             return stream.modify(new InitialDelay<Tuple>(getStartupDelay()*1000L));
         }
         return stream;
@@ -373,7 +375,7 @@ public class TestTopology {
                 seconds, TimeUnit.SECONDS,
                 contents);
 
-        assertTrue("Expected:" + contents, expectedContents.valid());
+        assertTrue("Expected:" + Arrays.asList(contents), expectedContents.valid());
     }
     
     /**
@@ -422,5 +424,13 @@ public class TestTopology {
     protected void adlOk() {
         assumeTrue(SC_OK);
         assumeTrue(getTesterType() == StreamsContext.Type.STANDALONE_TESTER);
+    }
+    
+    /**
+     * Return a stream that will only contain unique values from stream.
+     */
+    public static <T> TStream<T> uniqueValues(TStream<T> stream) {   	
+    	Set<T> seen = new HashSet<>();
+    	return stream.map(tuple -> seen.add(tuple) ? tuple : null);
     }
 }

@@ -18,6 +18,7 @@
 #define __SPL__SPLPY_PYOP_H
 
 #include "splpy_op.h"
+#include "splpy_cr.h"
 
 namespace streamsx {
   namespace topology {
@@ -25,19 +26,10 @@ namespace streamsx {
 class SplpyPyOp : public SplpyOp {
   public:
       SplpyPyOp(SPL::Operator * op) :
-          SplpyOp(op, "/opt/.__splpy/common"), isStateful_(false) {
+          SplpyOp(op, "/opt/.__splpy/common") {
       }
 
-      void setStateful(bool stateful) {
-        isStateful_ = stateful;
-      }
-
-      virtual bool isStateful() {
-        return isStateful_;
-      }
-
- private:
-      bool isStateful_;
+      virtual ~SplpyPyOp() {}
 };
 
 }}

@@ -6,11 +6,14 @@ package com.ibm.streamsx.topology.generator.spl;
 
 import static com.ibm.streamsx.topology.builder.JParamTypes.TYPE_COMPOSITE_PARAMETER;
 import static com.ibm.streamsx.topology.builder.JParamTypes.TYPE_SUBMISSION_PARAMETER;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.CONFIG;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.KIND;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_PYTHON;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_SPL;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_FUNCTIONAL;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_SPL;
 import static com.ibm.streamsx.topology.generator.port.PortProperties.inputPortRef;
 import static com.ibm.streamsx.topology.generator.spl.GraphUtilities.getDownstream;
 import static com.ibm.streamsx.topology.generator.spl.GraphUtilities.getUpstream;
@@ -482,13 +485,31 @@ public class SPLGenerator {
         return name;
     }
     
-    private JsonObject createCompositeInvocation(JsonObject opDefinition, List<List<JsonObject>> startsEndsAndOperators) {
+    private JsonObject createCompositeInvocation(JsonObject opDefinition, List<List<JsonObject>> startsEndsAndOperators) {       
         JsonObject compositeInvocation = new JsonObject();
 
         // Create name and kind
-        compositeInvocation.addProperty(KIND, jstring(opDefinition, KIND));
-        String parallelCompositeName = jstring(opDefinition, KIND) + "Invocation";
-        compositeInvocation.addProperty("name", parallelCompositeName);
+        
+        // Just take the name of the first operator
+        // unless a region name is found.
+        String invocationName = null;
+        for (JsonObject op : startsEndsAndOperators.get(0)) {
+            if (op.has(CONFIG)) {
+                JsonObject config = GsonUtilities.object(op, CONFIG);
+                if (config.has("regionName")) {
+                    invocationName = jstring(config, "regionName");
+                    break;
+                }               
+            }
+            if (invocationName == null)
+                invocationName = jstring(op, "name");
+        }
+        
+        compositeInvocation.add(KIND, opDefinition.get(KIND));
+        compositeInvocation.addProperty("name", invocationName);
+        // This is an invocation of an SPL (generated) composite
+        compositeInvocation.addProperty(MODEL, MODEL_SPL);
+        compositeInvocation.addProperty(LANGUAGE, LANGUAGE_SPL);
         
         // Create the inputs of the invocation -- what streams it consumes
         JsonArray inputs = new JsonArray();
@@ -507,7 +528,7 @@ public class SPLGenerator {
         return compositeInvocation;
     }
 
-    private JsonObject createParallelCompositeInvocation(JsonObject opDefinition, List<List<JsonObject>> startsEndsAndOperators) {
+    private JsonObject createParallelCompositeInvocation(JsonObject opDefinition, List<List<JsonObject>> startsEndsAndOperators) {              
         JsonObject compositeInvocation = createCompositeInvocation(opDefinition, startsEndsAndOperators);
         
         // Create object with parallel information of input ports
@@ -740,6 +761,9 @@ public class SPLGenerator {
     
     void generateGraph(JsonObject graph, StringBuilder sb) throws IOException {
         JsonObject graphConfig = getGraphConfig(graph);
+        
+        createCheckpointConfig(graphConfig);
+        
         graphConfig.addProperty("supportsJobConfigOverlays", versionAtLeast(4,2));
 
         String namespace = splAppNamespace(graph);
@@ -878,18 +902,38 @@ public class SPLGenerator {
         }
     }
     
+    private String checkpointConfig;
+    private void createCheckpointConfig(JsonObject graphConfig) {
+    	JsonObject checkpoint = GsonUtilities.jobject(graphConfig, "checkpoint");
+    	if (checkpoint == null)
+    		return;
+    	
+        TimeUnit unit = TimeUnit.valueOf(jstring(checkpoint, "unit"));
+        long period = checkpoint.get("period").getAsLong();
+        
+        // SPL works in seconds, including fractions.
+        long periodMs = unit.toMillis(period);
+        double periodSec = ((double) periodMs) / 1000.0;
+        
+        StringBuilder sb = new StringBuilder();
+        sb.append("    checkpoint: periodic(");
+        sb.append(periodSec);
+        sb.append(");\n");
+        
+        checkpointConfig = sb.toString();       
+    }
+    
+    String getCheckpointConfig() {
+    	return checkpointConfig;
+    }
+    
     private void generateMainCompConfig(JsonObject graphConfig, StringBuilder sb) {
         JsonArray hostPools = array(graphConfig, "__spl_hostPools");
         boolean hasHostPools =  hostPools != null && hostPools.size() != 0;
-        
-        JsonObject checkpoint = GsonUtilities.jobject(graphConfig, "checkpoint");
-        
-        boolean hasCheckpoint = checkpoint != null;
-                
-        if (hasHostPools || hasCheckpoint)
+                        
+        if (hasHostPools)
             sb.append("  config\n");
-        
-        
+                
         if (hasHostPools) {
             boolean seenOne = false;
             for (JsonElement hpo : hostPools) {
@@ -914,18 +958,6 @@ public class SPLGenerator {
                 sb.append("]}, Sys.Shared)");
             }
             sb.append(";\n");
-        }
-        
-        if (hasCheckpoint) {
-            TimeUnit unit = TimeUnit.valueOf(jstring(checkpoint, "unit"));
-            long period = checkpoint.get("period").getAsLong();
-            
-            // SPL works in seconds, including fractions.
-            long periodMs = unit.toMillis(period);
-            double periodSec = ((double) periodMs) / 1000.0;
-            sb.append("    checkpoint: periodic(");
-            sb.append(periodSec);
-            sb.append(");\n");
         }
     }
 

@@ -1,27 +1,29 @@
 /*
  * # Licensed Materials - Property of IBM
- * # Copyright IBM Corp. 2015  
+ * # Copyright IBM Corp. 2015,2018
  */
+<%
+require "splpy_operator.pm";
+my $pyStateful = splpy_OperatorCallable() eq 'class' ? 1 : 0;
+%>
+@include "../../opt/.__splpy/common/py_state.cgt"
 
+#include "splpy.h"
 #include "splpy_pyop.h"
 
 using namespace streamsx::topology;
 
 <%SPL::CodeGen::headerPrologue($model);%>
 
-class MY_OPERATOR : public MY_BASE_OPERATOR 
+class MY_OPERATOR : public MY_BASE_OPERATOR
+#if SPLPY_OP_STATEFUL == 1
+    ,public DelegatingStateHandler
+#endif
 {
 public:
-  // Constructor
   MY_OPERATOR();
-
-  // Destructor
   virtual ~MY_OPERATOR(); 
-
-  // Notify pending shutdown
   void prepareToShutdown(); 
-
-  // Tuple processing for non-mutating ports
   void process(Tuple const & tuple, uint32_t port);
 
 private:
@@ -30,6 +32,8 @@ private:
   // Members
     SplpyPyOp *pyop_;
     PyObject *pyInNames_;
+
+@include "../../opt/.__splpy/common/py_enable_cr.cgt"
 }; 
 
 <%SPL::CodeGen::headerEpilogue($model);%>

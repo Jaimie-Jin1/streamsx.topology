@@ -6,7 +6,9 @@ package com.ibm.streamsx.rest;
 
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.UnsupportedEncodingException;
@@ -14,6 +16,8 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.security.KeyManagementException;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
@@ -181,7 +185,7 @@ class StreamsRestUtils {
     }
 
     /**
-     * Gets a JSON response to an HTTP call
+     * Gets a JSON response to an HTTP GET call
      * 
      * @param executor HTTP client executor to use for call
      * @param auth Authentication header contents, or null
@@ -192,14 +196,20 @@ class StreamsRestUtils {
      */
     static JsonObject getGsonResponse(Executor executor, String auth, String inputString)
             throws IOException {
-        Request request = Request
-                .Get(inputString)
-                .addHeader("accept", ContentType.APPLICATION_JSON.getMimeType())
-                .useExpectContinue();
+        Request request = Request.Get(inputString).useExpectContinue();
+        
         if (null != auth) {
             request = request.addHeader(AUTH.WWW_AUTH_RESP, auth);
         }
-
+        
+        return requestGsonResponse(executor, request);
+    }
+    
+    /**
+     * Gets a JSON response to an HTTP request call
+     */
+    static JsonObject requestGsonResponse(Executor executor, Request request) throws IOException {
+    	request.addHeader("accept", ContentType.APPLICATION_JSON.getMimeType());
         Response response = executor.execute(request);
         return gsonFromResponse(response.returnResponse());
     }
@@ -267,6 +277,35 @@ class StreamsRestUtils {
         }
         traceLog.finest(rcResponse + ": " + sReturn);
         return sReturn;
+    }
+    
+    static InputStream rawStreamingGet(Executor executor,
+            String auth, String url) throws IOException {
+        Request request = Request
+                .Get(url)
+                .addHeader("accept", ContentType.APPLICATION_JSON.getMimeType())
+                .useExpectContinue();
+        if (null != auth) {
+            request = request.addHeader(AUTH.WWW_AUTH_RESP, auth);
+        }
+        
+        Response response = executor.execute(request);
+        HttpResponse hResponse = response.returnResponse();
+        int rcResponse = hResponse.getStatusLine().getStatusCode();
+        
+        if (HttpStatus.SC_OK == rcResponse) {
+            return hResponse.getEntity().getContent();
+        } else {
+            // all other errors...
+            String httpError = "HttpStatus is " + rcResponse + " for url " + url;
+            throw new RESTException(rcResponse, httpError);
+        }
+    }
+    
+    static void getFile(Executor executor, String auth, String url, File file) throws IOException {
+    	try (InputStream is = rawStreamingGet(executor, auth, url)) {
+    		Files.copy(is, file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+    	}
     }
 
     /**

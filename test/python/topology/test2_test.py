@@ -2,6 +2,8 @@
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2017
 import unittest
+import itertools
+import datetime
 import time
 
 from streamsx.topology.topology import *
@@ -14,6 +16,9 @@ def rands():
     r = random.Random()
     while True:
        yield r.random()
+
+def tc_dep(tuple_):
+    return True
 
 class TestTester(unittest.TestCase):
     _multiprocess_can_split_ = True
@@ -67,6 +72,9 @@ class TestTester(unittest.TestCase):
         if self.test_ctxtype == context.ContextTypes.STANDALONE:
             tester.run_for(20)
         tester.tuple_check(s, lambda r : r > 7.8)
+        # Ensure we perform dependency checking for the check function
+        import fns_test2_test
+        tester.tuple_check(s, fns_test2_test.tc_dep)
         tester.test(self.test_ctxtype, self.test_config)
 
     def test_local_check(self):
@@ -115,10 +123,50 @@ class TestTester(unittest.TestCase):
         test_duration = now - self.rf_start
         self.assertTrue(test_duration >= 120)
 
+    def test_eventual_result_ok(self):
+        N=500000
+        topo = Topology()
+        s = topo.source(range(N))
+        w = s.batch(datetime.timedelta(milliseconds=300))
+        a = w.aggregate(lambda t : (len(t), sum(t)))
+        tester = Tester(topo)
+        tester.tuple_count(s, N)
+        tester.eventual_result(a, _EROK(N))
+        # Ensure we perform dependency checking for the check function
+        import fns_test2_test
+        tester.eventual_result(s, fns_test2_test.tc_dep)
+        tester.test(self.test_ctxtype, self.test_config)
+
+    def test_eventual_result_bad(self):
+        N=500000
+        topo = Topology()
+        s = topo.source(range(N))
+        w = s.batch(datetime.timedelta(milliseconds=300))
+        a = w.aggregate(lambda t : (len(t), sum(t)))
+        tester = Tester(topo)
+        tester.tuple_count(s, N)
+        tester.eventual_result(a, _EROK(int(N/4)))
+        ok = tester.test(self.test_ctxtype, self.test_config, assert_on_fail=False)
+        self.assertFalse(ok)
+
     def get_start_time(self):
         job = self.tester.submission_result.job
         self.rf_start = job.submitTime / 1000.0
 
+class _EROK(object):
+    def __init__(self, N):
+        self.N = N
+        self.E = sum(range(N))
+        self._count = 0
+        self._sum = 0
+    def __call__(self, tuple_):
+        self._count += tuple_[0]
+        self._sum += tuple_[1]
+        if self._count < self.N:
+             return None
+        if self._count == self.N and self._sum == self.E:
+             return True
+        return False
 
 class TestDistributedTester(TestTester):
     def setUp(self):

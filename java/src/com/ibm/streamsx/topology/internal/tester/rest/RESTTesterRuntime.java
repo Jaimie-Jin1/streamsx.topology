@@ -4,20 +4,23 @@
  */
 package com.ibm.streamsx.topology.internal.tester.rest;
 
-import static com.ibm.streamsx.topology.internal.context.remote.RemoteBuildAndSubmitRemoteContext.streamingAnalyticServiceFromDeploy;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jobject;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
 import static java.util.Objects.requireNonNull;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 
 import com.google.gson.JsonObject;
 import com.ibm.streams.flow.handlers.StreamHandler;
 import com.ibm.streams.operator.Tuple;
+import com.ibm.streamsx.rest.Instance;
 import com.ibm.streamsx.rest.Job;
-import com.ibm.streamsx.rest.StreamingAnalyticsService;
 import com.ibm.streamsx.topology.TSink;
 import com.ibm.streamsx.topology.TStream;
 import com.ibm.streamsx.topology.context.StreamsContext;
@@ -25,6 +28,7 @@ import com.ibm.streamsx.topology.function.Consumer;
 import com.ibm.streamsx.topology.internal.context.remote.SubmissionResultsKeys;
 import com.ibm.streamsx.topology.internal.tester.ConditionTesterImpl;
 import com.ibm.streamsx.topology.internal.tester.TesterRuntime;
+import com.ibm.streamsx.topology.internal.tester.TesterRuntime.TestState;
 import com.ibm.streamsx.topology.internal.tester.conditions.ContentsUserCondition;
 import com.ibm.streamsx.topology.internal.tester.conditions.CounterUserCondition;
 import com.ibm.streamsx.topology.internal.tester.conditions.NoStreamCondition;
@@ -39,34 +43,34 @@ public class RESTTesterRuntime extends TesterRuntime {
     
     
     private int id;
-    private final MetricConditionChecker metricsChecker;
+    protected final MetricConditionChecker metricsChecker;
+    private final Function<JsonObject, Callable<Instance>> instanceSupplier;
 
-    public RESTTesterRuntime(ConditionTesterImpl tester) {
+    public RESTTesterRuntime(ConditionTesterImpl tester, Function<JsonObject, Callable<Instance>> instanceSupplier) {
         super(tester);
+        this.instanceSupplier = instanceSupplier;
         metricsChecker = new MetricConditionChecker();
     }
-
+    
     @Override
     public void start(Object info) throws Exception {
         
         JsonObject deployment = (JsonObject) info;
         
-        final StreamingAnalyticsService sas = streamingAnalyticServiceFromDeploy(deployment);  
-
         JsonObject submission = jobject(deployment, "submissionResults");
         requireNonNull(submission);
 
         String jobId = jstring(submission, SubmissionResultsKeys.JOB_ID);
         requireNonNull(jobId);
 
-        Job job = sas.getInstance().getJob(jobId);
+        Job job = instanceSupplier.apply(deployment).call().getJob(jobId);
 
         metricsChecker.setup(job);
     }
 
     @Override
-    public void shutdown(Future<?> future) throws Exception {
-        metricsChecker.shutdown();
+    public void shutdown(Future<?> future, TestState state) throws Exception {
+        metricsChecker.shutdown(state);
     }
     
     @Override
@@ -130,6 +134,7 @@ public class RESTTesterRuntime extends TesterRuntime {
         
         TStream<Object> os = (TStream<Object>) stream;
         TSink end = os.forEach(fn);
+        end.operator().layout().addProperty("hidden", true);
         if (os.isPlaceable())
             end.colocate(os);
         
@@ -149,9 +154,18 @@ public class RESTTesterRuntime extends TesterRuntime {
     }
 
     @Override
-    public TestState checkTestState(StreamsContext<?> context, Map<String, Object> config, Future<?> future,
+    public TestState checkTestState(StreamsContext<?> context, Map<String, Object> config, Future<?> jobSubmission,
             Condition<?> endCondition) throws Exception {
-        return metricsChecker.checkTestState();
+    	if (jobSubmission.isCancelled() || jobSubmission.isDone())
+            return metricsChecker.checkTestState();
+    	
+    	// Waiting for job submission
+    	try {
+    	    jobSubmission.get(2, TimeUnit.SECONDS);
+    	} catch (TimeoutException te) { 
+    	}
+    	
+    	return TestState.NOT_READY;
     }
 
 }

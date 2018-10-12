@@ -143,7 +143,7 @@ class SPLGraph(object):
         return self._requested_name(name)
 
 
-    def addOperator(self, kind, function=None, name=None, params=None, sl=None, stateful=False):
+    def addOperator(self, kind, function=None, name=None, params=None, sl=None, stateful=None):
         if(params is None):
             params = {}
 
@@ -159,12 +159,16 @@ class SPLGraph(object):
         self.operators.append(op)
         if not function is None:
             dep_instance = function
-            if isinstance(function, streamsx.topology.runtime._WrappedInstance):
+            if isinstance(function, streamsx._streams._runtime._WrapOpLogic):
                 dep_instance = type(function._callable)
 
-            if not inspect.isbuiltin(dep_instance):
-                self.resolver.add_dependencies(inspect.getmodule(dep_instance))
+            self.add_dependency(dep_instance)
+
         return op
+
+    def add_dependency(self, obj_):
+        if not inspect.isbuiltin(obj_):
+            self.resolver.add_dependencies(inspect.getmodule(obj_))
     
     def addPassThruOperator(self):
         name = self.name + "_OP"+str(len(self.operators))
@@ -268,7 +272,7 @@ class SPLGraph(object):
 
 class _SPLInvocation(object):
 
-    def __init__(self, index, kind, function, name, params, graph, view_configs = None, sl=None, stateful = False):
+    def __init__(self, index, kind, function, name, params, graph, view_configs = None, sl=None, stateful=None):
         self.index = index
         self.kind = kind
         self.model = None
@@ -278,13 +282,13 @@ class _SPLInvocation(object):
         self.category = None
         self.params = {}
         self.setParameters(params)
-        self._addOperatorFunction(self.function, stateful)
+        self.config = {}
         self.graph = graph
         self.viewable = True
         self.sl = sl
         self._placement = {}
         self._start_op = False
-        self.config = {}
+        self._consistent = None
         # Arbitrary JSON for operator
         self._op_def = {}
 
@@ -296,6 +300,7 @@ class _SPLInvocation(object):
         self.inputPorts = []
         self.outputPorts = []
         self._layout_hints = {}
+        self._addOperatorFunction(self.function, stateful)
 
     def addOutputPort(self, oWidth=None, name=None, inputPort=None, schema= CommonSchema.Python,partitioned_keys=None, routing = None):
         if name is None:
@@ -407,13 +412,38 @@ class _SPLInvocation(object):
         if self._layout_hints:
             _op['layout'] = self._layout_hints
 
+        if self._consistent is not None:
+            _op['consistent'] = {}
+            consistent = _op['consistent']
+            consistent['trigger'] = self._consistent.trigger.name
+            if self._consistent.trigger == streamsx.topology.consistent.ConsistentRegionConfig.Trigger.PERIODIC:
+                if isinstance(self._consistent.period, datetime.timedelta):
+                    consistent_period = self._consistent.period.total_seconds()
+                else:
+                    consistent_period = float(self._consistent.period)
+                consistent['period'] = str(consistent_period)
+
+            if isinstance(self._consistent.drain_timeout, datetime.timedelta):
+                consistent_drain = self._consistent.drain_timeout.total_seconds();
+            else:
+                consistent_drain = float(self._consistent.drain_timeout)
+            consistent['drainTimeout'] = str(consistent_drain)
+
+            if isinstance(self._consistent.reset_timeout, datetime.timedelta):
+                consistent_reset = self._consistent.reset_timeout.total_seconds();
+            else:
+                consistent_reset = float(self._consistent.reset_timeout)
+            consistent['resetTimeout'] = str(consistent_reset)
+
+            consistent['maxConsecutiveResetAttempts'] = int(self._consistent.max_consecutive_attempts)
+
         # Callout to allow a ExtensionOperator
         # to augment the JSON
         if hasattr(self, '_ex_op'):
             self._ex_op._generate(_op)
         return _op
 
-    def _addOperatorFunction(self, function, stateful=False):
+    def _addOperatorFunction(self, function, stateful):
         if (function is None):
             return None
         if not hasattr(function, "__call__"):
@@ -424,11 +454,12 @@ class _SPLInvocation(object):
 
         # Wrap a lambda as a callable class instance
         if isinstance(function, types.LambdaType) and function.__name__ == "<lambda>" :
-            function = streamsx.topology.runtime._Callable(function)
+            function = streamsx.topology.runtime._Callable(function, no_context=True)
         elif function.__module__ == '__main__':
             # Function/Class defined in main, create a callable wrapping its
             # dill'ed form
-            function = streamsx.topology.runtime._Callable(function)
+            function = streamsx.topology.runtime._Callable(function,
+                no_context = True if inspect.isroutine(function) else None)
          
         if inspect.isroutine(function):
             # callable is a function
@@ -439,8 +470,11 @@ class _SPLInvocation(object):
             # dill format is binary; base64 encode so it is json serializable 
             self.params["pyCallable"] = base64.b64encode(dill.dumps(function)).decode("ascii")
 
-        self.params["pyStateful"] = bool(stateful)
-
+        if stateful is not None:
+            self.params['pyStateful'] = bool(stateful)
+            if not stateful:
+                self.config['noCheckpoint'] = True
+                 
         # note: functions in the __main__ module cannot be used as input to operations 
         # function.__module__ will be '__main__', so C++ operators cannot import the module
         self.params["pyModule"] = function.__module__
@@ -462,12 +496,18 @@ class _SPLInvocation(object):
         """
         if isinstance(self, Marker):
             return
+        colocate_tag = '__spl_' + why + '$' + str(self.index)
+        self._colocate_tag(colocate_tag)
+        for op in others:
+            op._colocate_tag(colocate_tag)
 
+    def _colocate_tag(self, colocate_tag):
         if 'colocateTags' not in self._placement:
             self._placement['colocateTags'] = []
-
-        colocate_tag = '__spl_' + why + '$' + str(self.index)
         self._placement['colocateTags'].append(colocate_tag)
+
+    def consistent(self, consistent_config):
+        self._consistent = consistent_config
 
     def _layout(self, kind=None, hidden=None, name=None, orig_name=None):
         if kind:

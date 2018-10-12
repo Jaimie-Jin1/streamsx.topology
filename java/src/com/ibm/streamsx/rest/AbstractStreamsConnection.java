@@ -4,6 +4,7 @@
  */
 package com.ibm.streamsx.rest;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -11,22 +12,21 @@ import java.util.List;
 import org.apache.http.client.fluent.Executor;
 
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonSyntaxException;
+import com.google.gson.JsonObject;
 import com.google.gson.annotations.Expose;
 
 /**
  * Connection to IBM Streams instance
  */
-abstract class AbstractStreamsConnection implements IStreamsConnection {
+abstract class AbstractStreamsConnection {
 
     private static final String INSTANCES_RESOURCE_NAME = "instances";
 
     private final String resourcesUrl;
 
     protected Executor executor;
-    protected String authorization;
-    protected String instancesUrl;
-
+    private String instancesUrl;
+    
     /**
      * Cancel a job.
      * domainInstance will only be called for distributed where we cancel using
@@ -38,6 +38,12 @@ abstract class AbstractStreamsConnection implements IStreamsConnection {
      * @throws IOException
      */
     abstract boolean cancelJob(Instance instance, String jobId) throws IOException;
+    
+    ApplicationBundle uploadBundle(Instance instance, File bundle) throws IOException {
+    	return new FileBundle(instance, bundle);
+    }
+    
+    abstract Result<Job,JsonObject> submitJob(ApplicationBundle bundle, JsonObject jco) throws IOException;
 
     abstract String getAuthorization();
 
@@ -53,34 +59,15 @@ abstract class AbstractStreamsConnection implements IStreamsConnection {
      *            String representing the root url to the REST API resources,
      *            for example: https://server:port/streams/rest/resources
      */
-    AbstractStreamsConnection(String authorization, String resourcesUrl,
-            boolean allowInsecure) throws IOException {
-        this.authorization = authorization;
+    AbstractStreamsConnection(String resourcesUrl,
+            boolean allowInsecure) {
         this.resourcesUrl = resourcesUrl;
         this.executor = StreamsRestUtils.createExecutor(allowInsecure);
     }
-
-    /**
-     * Must be called after construction once to initialize the connection.
-     */
-    synchronized void init() throws IOException, JsonSyntaxException {
-        if (null == instancesUrl) {
-            // Query the resourcesUrl to find the instances URL
-            String response = getResponseString(resourcesUrl);
-            ResourcesArray resources = new GsonBuilder()
-                    .excludeFieldsWithoutExposeAnnotation()
-                    .create().fromJson(response, ResourcesArray.class);
-            for (Resource resource : resources.resources) {
-                if (INSTANCES_RESOURCE_NAME.equals(resource.name)) {
-                    instancesUrl = resource.resource;
-                    break;
-                }
-            }
-            if (null == instancesUrl) {
-                // If we couldn't find instances something is wrong
-                throw new RESTException("Unable to find instances resource from resources URL: " + resourcesUrl);
-            }
-        }
+    
+    public boolean allowInsecureHosts(boolean allowInsecure) {
+    	this.executor = StreamsRestUtils.createExecutor(allowInsecure);
+    	return allowInsecure;
     }
 
     /**
@@ -88,13 +75,6 @@ abstract class AbstractStreamsConnection implements IStreamsConnection {
      */
     Executor getExecutor() {
         return executor;
-    }
-
-    /**
-     * Set the contents of the authorization header
-     */
-    protected void setAuthorization(String authorization) {
-        this.authorization = authorization;
     }
 
     /**
@@ -112,33 +92,48 @@ abstract class AbstractStreamsConnection implements IStreamsConnection {
     /* (non-Javadoc)
      * @see com.ibm.streamsx.rest.StreamsConnection#getInstances()
      */
-    @Override
     public List<Instance> getInstances() throws IOException {
-        return Instance.createInstanceList(this, instancesUrl);
+        return Instance.createInstanceList(this, getInstancesURL());
     }
 
     /* (non-Javadoc)
      * @see com.ibm.streamsx.rest.StreamsConnection#getInstance(java.lang.String)
      */
-    @Override
     public Instance getInstance(String instanceId) throws IOException {
-        Instance si = null;
-        if ("".equals(instanceId)) {
-            // should add some fallback code to see if there's only one instance
-            throw new IllegalArgumentException("Missing instance id");
+        if (instanceId.isEmpty()) {
+            throw new IllegalArgumentException("Empty instance id");
         } else {
-            String query = instancesUrl + "?id=" + instanceId;
+            String query = getInstancesURL() + "?id=" + instanceId;
 
             List<Instance> instances = Instance.createInstanceList(this, query);
             if (instances.size() == 1) {
                 // Should find one or none
-                si = instances.get(0);
+                return instances.get(0);
             } else {
-                throw new RESTException(404, "No single instance with id " + instanceId);
+                throw new RESTException(404, "No instance with id " + instanceId);
             }
-
         }
-        return si;
+    }
+    
+    private String getInstancesURL() throws IOException {
+    	if (instancesUrl == null) {
+            // Query the resourcesUrl to find the instances URL
+            String response = getResponseString(resourcesUrl);
+            ResourcesArray resources = new GsonBuilder()
+                    .excludeFieldsWithoutExposeAnnotation()
+                    .create().fromJson(response, ResourcesArray.class);
+            for (Resource resource : resources.resources) {
+                if (INSTANCES_RESOURCE_NAME.equals(resource.name)) {
+                    instancesUrl = resource.resource;
+                    break;
+                }
+            }
+            if (null == instancesUrl) {
+                // If we couldn't find instances something is wrong
+                throw new RESTException("Unable to find instances resource from resources URL: " + resourcesUrl);
+            }
+    	}
+    	return instancesUrl;
     }
 
     private static class Resource {

@@ -4,70 +4,62 @@
  */
 package com.ibm.streamsx.rest;
 
+import static java.util.Objects.requireNonNull;
+
 import java.io.IOException;
-import java.math.BigInteger;
 import java.util.List;
 
-import org.apache.http.client.fluent.Executor;
-
-import com.ibm.streamsx.topology.internal.streams.InvokeCancel;
+import com.ibm.streamsx.topology.internal.streams.Util;
 
 /**
  * Connection to IBM Streams.
  */
 public class StreamsConnection {
-    IStreamsConnection delegate;
-    protected boolean allowInsecure;
+    private AbstractStreamsConnection delegate;
 
-    private String userName;
-    private String authToken;
-    private String url;
-
-    /**
-     * @deprecated No replacement {@code StreamsConnection} is not intended to be sub-classed.
-     */
-    @Deprecated
-    protected String apiKey;
-    
-    /**
-     * @deprecated No replacement {@code StreamsConnection} is not intended to be sub-classed.
-     */
-    @Deprecated
-    protected Executor executor;
-
-    StreamsConnection(IStreamsConnection delegate,
-            boolean allowInsecure) {
+    StreamsConnection(AbstractStreamsConnection delegate) {
         this.delegate = delegate;
-        this.allowInsecure = allowInsecure;
-        refreshState();
+    }
+    
+    private final AbstractStreamsConnection delegate() {
+    	return this.delegate;
     }
 
     /**
-     * @deprecated No replacement {@code StreamsConnection} is not intended to be sub-classed.
-     */
-    @Deprecated
-    protected StreamsConnection(String userName, String authToken, String url) {
-        this(createDelegate(userName, authToken, url), false);
-    }
-
-    /**
-     * Connection to IBM Streams
+     * Create a connection to IBM Streams REST API.
      *
      * @param userName
-     *            String representing the userName to connect to the instance
+     *            String representing the user name to connect to the instance.
+     *            If {@code null} user name defaults to value of the environment
+     *            variable {@code STREAMS_USERNAME} if set, else the value of
+     *            the Java system property {@code user.name}.
      * @param authToken
-     *            String representing the password to connect to the instance
+     *            String representing the password to connect to the instance.
+     *            If {@code null} password defaults to value of the environment
+     *            variable {@code STREAMS_PASSWORD} if set.
      * @param url
-     *            String representing the root url to the REST API
+     *            String representing the root url to the REST API.
+     *            If {@code null} password defaults to value of the environment
+     *            variable {@code STREAMS_REST_URL} if set.
+     *
      * @return a connection to IBM Streams
      */
     public static StreamsConnection createInstance(String userName,
             String authToken, String url) {
-        IStreamsConnection delegate = createDelegate(userName, authToken, url);
-        StreamsConnection sc = new StreamsConnection(delegate, false);
-        sc.userName = userName;
-        sc.authToken = authToken;
-        sc.url = url;
+    	if (userName == null) {
+    		userName = System.getenv(Util.STREAMS_USERNAME);
+    		if (userName == null)
+    			userName = System.getProperty("user.name");
+    	}
+    	
+    	if (authToken == null)
+    		authToken = System.getenv(Util.STREAMS_PASSWORD);
+    	
+    	if (url == null)
+    		url = System.getenv(Util.STREAMS_REST_URL);
+    	
+    	AbstractStreamsConnection delegate = createDelegate(userName, authToken, url);
+        StreamsConnection sc = new StreamsConnection(delegate);
         return sc;
     }
 
@@ -88,51 +80,7 @@ public class StreamsConnection {
      *         </ul>
      */
     public boolean allowInsecureHosts(boolean allowInsecure) {
-        refreshState();
-        if (allowInsecure != this.allowInsecure
-                && null != userName && null != authToken && null != url) {
-            try {
-                StreamsConnectionImpl connection = new StreamsConnectionImpl(userName,
-                        StreamsRestUtils.createBasicAuth(userName, authToken),
-                        url, allowInsecure);
-                connection.init();
-                delegate = connection;
-                this.allowInsecure = allowInsecure; 
-            } catch (IOException e) {
-                // Don't change current allowInsecure but update delegate in
-                // case new exception is more informative.
-                delegate = new InvalidStreamsConnection(e);
-            }
-        }
-        return this.allowInsecure;
-    }
-
-    /**
-     * Cancels a job identified by the jobId.
-     * <BR>
-     * <B>WARNING:</B> This cancels the job in the domain
-     * and instance identified by the environment variables
-     * {@code STREAMS_DOMAIN_ID} and {@code STREAMS_INSTANCE_ID}
-     * which may not be the intended job.
-     * <BR>
-     * Use {@link Job#cancel()} to cancel a job.
-     * 
-     * @param jobId
-     *            string identifying the job to be cancelled
-     * @return a boolean indicating
-     *         <ul>
-     *         <li>true if the jobId is cancelled</li>
-     *         <li>false if the jobId did not get cancelled</li>
-     *         </ul>
-     * @throws Exception
-     * @deprecated Not recommend for use as an instance is not uniquely defined
-     * by a {@code StreamsConnection}. Use {@link Job#cancel()}.
-     */
-    @Deprecated
-    public boolean cancelJob(String jobId) throws Exception {
-        refreshState();
-        InvokeCancel cancelJob = new InvokeCancel(new BigInteger(jobId), userName);
-        return cancelJob.invoke(false) == 0;
+    	return delegate().allowInsecureHosts(allowInsecure);
     }
 
     /**
@@ -144,9 +92,8 @@ public class StreamsConnection {
      * @return a single {@link Instance}
      * @throws IOException
      */
-    public Instance getInstance(String instanceId) throws IOException {
-        refreshState();
-        return delegate.getInstance(instanceId);
+    public Instance getInstance(String instanceId) throws IOException {   	
+        return delegate().getInstance(requireNonNull(instanceId));
     }
 
     /**
@@ -158,62 +105,14 @@ public class StreamsConnection {
      * @throws IOException
      */
     public List<Instance> getInstances() throws IOException {
-        refreshState();
-        return delegate.getInstances();
+        return delegate().getInstances();
     }
 
-    // Refresh protected members from the previous implementation
-    void refreshState() {
-        if (delegate instanceof AbstractStreamsConnection) {
-            AbstractStreamsConnection asc = (AbstractStreamsConnection)delegate;
-            apiKey = asc.getAuthorization();
-            executor = asc.getExecutor();
-        }
-    }
 
-    /**
-     * @deprecated No replacement {@code StreamsConnection} is not intended to be sub-classed.
-     */
-    @Deprecated
-    protected void setStreamsRESTURL(String url) {
-        delegate = createDelegate(userName, authToken, url);
-        refreshState();
-    }
-
-    private static IStreamsConnection createDelegate(String userName,
+    private static AbstractStreamsConnection createDelegate(String userName,
             String authToken, String url) {
-        IStreamsConnection delegate = null;
-        try {
-            StreamsConnectionImpl connection = new StreamsConnectionImpl(userName,
+        return new StreamsConnectionImpl(userName,
                     StreamsRestUtils.createBasicAuth(userName, authToken),
                     url, false);
-            connection.init();
-            delegate = connection;
-        } catch (Exception e) {
-            delegate = new InvalidStreamsConnection(e);
-        }
-        return delegate;
-    }
-
-    // Since the original class never threw on exception on creation, we need a
-    // dummy class that will throw on use.
-    static class InvalidStreamsConnection implements IStreamsConnection {
-        private final static String MSG = "Invalid Streams connection";
-
-        private final Exception exception;
-
-        InvalidStreamsConnection(Exception e) {
-            exception = e;
-        }
-
-        @Override
-        public Instance getInstance(String instanceId) throws IOException {
-            throw new RESTException(MSG, exception);
-        }
-
-        @Override
-        public List<Instance> getInstances() throws IOException {
-            throw new RESTException(MSG, exception);
-        }
     }
 }

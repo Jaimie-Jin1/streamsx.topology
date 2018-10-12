@@ -1,14 +1,5 @@
-/* Additional includes go here */
-
-#include "splpy.h"
-#include "splpy_tuple.h"
-#include "splpy_funcop.h"
-
-using namespace streamsx::topology;
-
 <%SPL::CodeGen::implementationPrologue($model);%>
 
-@include "../../opt/python/codegen/pysplenablecheckpointing.cgt"
 @include "../pyspltuple.cgt"
 <%
  # Select the Python wrapper function
@@ -20,7 +11,6 @@ using namespace streamsx::topology;
 #define SPLPY_OUT_TUPLE_FLAT_MAP_BY_REF(splv, pyv, occ)
     
 
-// Constructor
 MY_OPERATOR::MY_OPERATOR() :
    funcop_(NULL),
    pyInStyleObj_(NULL),
@@ -59,38 +49,37 @@ MY_OPERATOR::MY_OPERATOR() :
  }
 %>
 
-    funcop_ = new SplpyFuncOp(this, wrapfn);
+    funcop_ = new SplpyFuncOp(this, SPLPY_CALLABLE_STATEFUL, wrapfn);
 
 @include "../pyspltuple_constructor.cgt"
+#if SPLPY_OP_STATEFUL == 1
+   this->getContext().registerStateHandler(*this);
+#endif
 }
 
-// Destructor
 MY_OPERATOR::~MY_OPERATOR() 
 {
-  if (pyInStyleObj_) {
+  {
       SplpyGIL lock;
-      Py_DECREF(pyInStyleObj_);
+      Py_CLEAR(pyInStyleObj_);
   }
 
   delete funcop_;
 }
 
-// Notify pending shutdown
 void MY_OPERATOR::prepareToShutdown() 
 {
-    AutoLock stateLock(funcop_);
     funcop_->prepareToShutdown();
 }
 
-// Tuple processing for non-mutating ports
 void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
 {
-@include "../pyspltuple2value.cgt"
-  
   std::vector<OPort0Type> output_tuples; 
   
+ {
+  OptionalAutoLock stateLock(this);
+@include "../pyspltuple2value.cgt"
   try {
-    AutoLock stateLock(funcop_);
     SplpyGIL lock;
 
     PyObject * pyIterator = streamsx::topology::pySplProcessTuple(funcop_->callable(), value);
@@ -121,19 +110,18 @@ void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
     Py_DECREF(pyIterator);
   } catch (const streamsx::topology::SplpyExceptionInfo& excInfo) {
     SPLPY_OP_HANDLE_EXCEPTION_INFO_GIL(excInfo);
+    return;
   }
+ }
 
-  
   // submit tuples
   for(int i = 0; i < output_tuples.size() && !getPE().getShutdownRequested(); i++) {
     submit(output_tuples[i], 0);
   } 
-  
 }
 
 void MY_OPERATOR::process(Punctuation const & punct, uint32_t port)
 {
-   AutoLock lock(funcop_);
    forwardWindowPunctuation(punct);
 }
 

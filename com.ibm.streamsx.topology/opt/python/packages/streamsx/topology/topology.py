@@ -208,6 +208,7 @@ import random
 import streamsx._streams._placement as _placement
 import streamsx.spl.op
 import streamsx.spl.types
+import streamsx.topology.consistent
 import streamsx.topology.graph
 import streamsx.topology.schema
 import streamsx.topology.functions
@@ -353,6 +354,11 @@ class Topology(object):
                When compiling the application using Anaconda this set is pre-loaded with Python packages from the Anaconda pre-loaded set.
 
                Package names in `include_packages` take precedence over package names in `exclude_packages`.
+
+    All declared streams in a `Topology` are available through their name
+    using ``topology[name]``. The stream's name is defined by :py:meth:`Stream.name` and will differ from the name parameter passed when creating the stream if the application uses duplicate names.
+
+    .. versionchanged:: 1.11 Declared streams available through ``topology[name]``.
     """  
 
     def __init__(self, name=None, namespace=None, files=None):
@@ -380,6 +386,7 @@ class Topology(object):
           self.opnamespace = "com.ibm.streamsx.topology.functional.python2"
         else:
           raise ValueError("Python version not supported.")
+        self._streams = dict()
         self.include_packages = set() 
         self.exclude_packages = set() 
         self._pip_packages = list() 
@@ -393,6 +400,8 @@ class Topology(object):
         self.graph = streamsx.topology.graph.SPLGraph(self, name, namespace)
         self._submission_parameters = dict()
         self._checkpoint_period = None
+        self._consistent_region_config = None
+        self._has_jcp = False
 
     @property
     def name(self):
@@ -412,6 +421,9 @@ class Topology(object):
             str:Namespace of the topology.
         """
         return self.graph.namespace
+
+    def __getitem__(self, name):
+        return self._streams[name]
 
     def source(self, func, name=None):
         """
@@ -461,7 +473,7 @@ class Topology(object):
         sl = _SourceLocation(_source_info(), "source")
         _name = self.graph._requested_name(_name, action='source', func=func)
         # source is always stateful
-        op = self.graph.addOperator(self.opnamespace+"::Source", func, name=_name, sl=sl, stateful=True)
+        op = self.graph.addOperator(self.opnamespace+"::Source", func, name=_name, sl=sl)
         op._layout(kind='Source', name=_name, orig_name=name)
         oport = op.addOutputPort(name=_name)
         return Stream(self, oport)._make_placeable()
@@ -699,6 +711,8 @@ class Topology(object):
 
         Returns:
             The checkpoint period.
+
+        .. versionadded:: 1.11
         """
         return self._checkpoint_period
 
@@ -735,6 +749,17 @@ class Topology(object):
         else:
              self._files['opt'].append(reqs_include)
 
+    def _add_job_control_plane(self):
+        """
+        Add a JobControlPlane operator to the topology, if one has not already
+        been added.  If a JobControlPlane operator has already been added,
+        this has no effect.
+        """
+        if not self._has_jcp:
+            jcp = self.graph.addOperator(kind="spl.control::JobControlPlane", name="JobControlPlane")
+            jcp.viewable = False
+            self.has_jcp = True
+
 
 class Stream(_placement._Placement, object):
     """
@@ -747,6 +772,7 @@ class Stream(_placement._Placement, object):
         self.oport = oport
         self._placeable = False
         self._alias = None
+        topology._streams[self.oport.name] = self
 
     def _op(self):
         if not self._placeable:
@@ -756,7 +782,15 @@ class Stream(_placement._Placement, object):
     @property
     def name(self):
         """
-        Name of the stream.
+        Unique name of the stream.
+
+        When declaring a stream a `name` parameter can be provided.
+        If the supplied name is unique within its topology then
+        it will be used as-is, otherwise a variant will be provided
+        that is unique within the topology.
+
+        If a `name` parameter was not provided when declaring a stream
+        then the stream is assigned a unique generated name.
 
         Returns:
             str: Name of the stream.
@@ -1133,18 +1167,21 @@ class Stream(_placement._Placement, object):
         """
         _name = name
         if _name is None:
-            _name = self.name
+            _name = self.name + '_parallel'
             
-        _name = self.topology.graph._requested_name(name, action='parallel', func=func)
+        _name = self.topology.graph._requested_name(_name, action='parallel', func=func)
 
         if routing is None or routing == Routing.ROUND_ROBIN or routing == Routing.BROADCAST:
             op2 = self.topology.graph.addOperator("$Parallel$", name=_name)
+            if name is not None:
+                op2.config['regionName'] = _name
             op2.addInputPort(outputPort=self.oport)
             if routing == Routing.BROADCAST:
-                oport = op2.addOutputPort(width, schema=self.oport.schema, routing="BROADCAST")
+                oport = op2.addOutputPort(width, schema=self.oport.schema, routing="BROADCAST", name=_name)
             else:
-                oport = op2.addOutputPort(width, schema=self.oport.schema, routing="ROUND_ROBIN")
+                oport = op2.addOutputPort(width, schema=self.oport.schema, routing="ROUND_ROBIN", name=_name)
 
+                
             return Stream(self.topology, oport)
         elif routing == Routing.HASH_PARTITIONED:
 
@@ -1169,6 +1206,8 @@ class Stream(_placement._Placement, object):
                 parallel_input = hash_adder.addOutputPort(schema=hash_schema)
 
             parallel_op = self.topology.graph.addOperator("$Parallel$", name=_name)
+            if name is not None:
+                parallel_op.config['regionName'] = _name
             parallel_op.addInputPort(outputPort=parallel_input)
             parallel_op_port = parallel_op.addOutputPort(oWidth=width, schema=parallel_input.schema, partitioned_keys=keys, routing="HASH_PARTITIONED")
 
@@ -1202,20 +1241,42 @@ class Stream(_placement._Placement, object):
         endP = Stream(self.topology, oport)
         return endP
 
-    def set_parallel(self, width):
+    def set_parallel(self, width, name=None):
         """
         Indicates that the stream is the start of a parallel region. Should only be invoked on source operators.
         Args:
             width: The degree of parallelism for the parallel region.
+            name(str): Name of the parallel region. Defaults to the name of this stream.
 
         Returns:
             Stream: Returns this stream.
 
         .. versionadded:: 1.9
+        .. versionchanged:: 1.11 `name` parameter added.
         """
         self.oport.operator.config['parallel'] = True
         self.oport.operator.config['width'] = streamsx.topology.graph._as_spl_json(width, int)
+        if name:
+            name = self.topology.graph._requested_name(str(name), action='set_parallel')
+            self.oport.operator.config['regionName'] = name
         return self
+
+    def set_consistent(self, consistent_config):
+        """ Indicates that the stream is the start of a consistent region.
+
+        Args:
+            consistent_config(consistent.ConsistentRegionConfig): the configuration of the consistent region.
+
+        Returns:
+            Stream: Returns this stream.
+
+        .. versionadded:: 1.11
+        """
+
+        # add job control plane if needed
+        self.topology._add_job_control_plane()
+        self.oport.operator.consistent(consistent_config)
+        return self._make_placeable()
 
     def last(self, size=1):
         """ Declares a slding window containing most recent tuples

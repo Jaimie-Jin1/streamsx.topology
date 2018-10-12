@@ -11,7 +11,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.junit.Assume.assumeNotNull;
 import static org.junit.Assume.assumeTrue;
 
 import java.io.IOException;
@@ -19,7 +18,6 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
 
 import com.ibm.streamsx.rest.Domain;
@@ -44,7 +42,7 @@ import com.ibm.streamsx.topology.function.Function;
 
 public class StreamsConnectionTest {
 
-    StreamsConnection connection;
+    protected StreamsConnection connection;
     String instanceName;
     Instance instance;
     Job job;
@@ -54,197 +52,83 @@ public class StreamsConnectionTest {
     public StreamsConnectionTest() {
     }
 
-    private String getUserName() {
-        // allow the user to specify a different user name for this test
-        String userName = System.getenv("STREAMS_INSTANCE_USERID");
-        if ((userName == null) || (userName.isEmpty())) {
-            userName = System.getenv("USER");
-        }
-        return userName;
-    }
-
-    private String getStreamsPort() {
-        String streamsPort = System.getenv("STREAMS_INSTANCE_PORT");
-        if ((streamsPort == null) || streamsPort.isEmpty()) {
-            // if port not specified, assume default one
-            streamsPort = "8443";
-        }
-        return streamsPort;
-    }
-
-    private String getUserPassword() {
-        String instancePassword = System.getenv("STREAMS_INSTANCE_PASSWORD");
-        // Default password for the QSE
-        if ("streamsadmin".equals(getUserName()) && instancePassword == null) {
-            instancePassword = "passw0rd";
-        }
-        // don't print this out unless you need it
-        // System.out.println("InstancePWD: " + instancePassword);
-        return instancePassword;
-    }
-
-    public void setupConnection() throws Exception {
+    protected void setupConnection() throws Exception {
         if (connection == null) {
             testType = "DISTRIBUTED";
 
             instanceName = System.getenv("STREAMS_INSTANCE_ID");
-            System.out.println("InstanceName: " + instanceName);
+            if (instanceName != null)
+                System.out.println("InstanceName: " + instanceName);
+            else
+            	System.out.println("InstanceName: assumng single instance");
+            	
 
-            String userName = getUserName();
-            System.out.println("UserName: " + userName);
-            String streamsPort = getStreamsPort();
-            System.out.println("streamsPort: " + streamsPort);
-            String instancePassword = getUserPassword();
-
-            // if the instance name and password are not set, bail
-            assumeNotNull(instanceName, instancePassword);
-
-            String restUrl = "https://localhost:" + streamsPort + "/streams/rest/resources";
-            connection = StreamsConnection.createInstance(userName, instancePassword, restUrl);
+            connection = StreamsConnection.createInstance(null, null, null);
 
             // for localhost, need to disable security
             connection.allowInsecureHosts(true);
         }
     }
 
-    public void setupInstance() throws Exception {
+    protected void setupInstance() throws Exception {
         setupConnection();
 
         if (instance == null) {
-            instance = connection.getInstance(instanceName);
+			if (instanceName != null) {
+				instance = connection.getInstance(instanceName);
+			} else {
+				List<Instance> instances = connection.getInstances();
+				assertEquals(1, instances.size());
+				instance = instances.get(0);
+			}
             // don't continue if the instance isn't started
-            System.out.println("Instance: " + instance.getStatus());
             assumeTrue(instance.getStatus().equals("running"));
         }
     }
 
-    @Test
-    public void testBadConnections() throws Exception {
-        // only run this test if this is a Streams Connection
-        assumeTrue(getClass() == StreamsConnectionTest.class);
 
-        String iName = getUserName();
-        String sPort = getStreamsPort();
-        String iPassword = getUserPassword();
-
-        // send in wrong url
-        String badUrl = "https://localhost:" + sPort + "/streams/re";
-        StreamsConnection badConn = StreamsConnection.createInstance(iName, iPassword, badUrl);
-        badConn.allowInsecureHosts(true);
-        try {
-            badConn.getInstances();
-        } catch (RESTException r) {
-            assertEquals(r.toString(), 404, r.getStatusCode());
-        }
-
-        // send in url too long
-        String badURL = "https://localhost:" + sPort + "/streams/rest/resourcesTooLong";
-        badConn = StreamsConnection.createInstance(iName, iPassword, badURL);
-        badConn.allowInsecureHosts(true);
-        try {
-            badConn.getInstances();
-        } catch (RESTException r) {
-            assertEquals(r.toString(), 404, r.getStatusCode());
-        }
-
-        // send in bad iName
-        String restUrl = "https://localhost:" + sPort + "/streams/rest/resources";
-        badConn = StreamsConnection.createInstance("fakeName", iPassword, restUrl);
-        badConn.allowInsecureHosts(true);
-        try {
-            badConn.getInstances();
-        } catch (RESTException r) {
-            assertEquals(r.toString(), 401, r.getStatusCode());
-        }
-
-        // send in wrong password
-        badConn = StreamsConnection.createInstance(iName, "badPassword", restUrl);
-        badConn.allowInsecureHosts(true);
-        try {
-            badConn.getInstances();
-        } catch (RESTException r) {
-            assertEquals(r.toString(), 401, r.getStatusCode());
-        }
-    }
-
-    @Test
-    public void testGetInstances() throws Exception {
-        setupConnection();
-        // get all instances in the domain
-        List<Instance> instances = connection.getInstances();
-        // there should be at least one instance
-        assertTrue(instances.size() > 0);
-
-        Instance i2 = connection.getInstance(instanceName);
-        assertEquals(instanceName, i2.getId());
-
-        i2.refresh();
-        assertEquals(instanceName, i2.getId());
-        
-        List<ProcessingElement> instancePes = i2.getPes();
-        for (ProcessingElement pe : instancePes) {
-            assertNotNull(pe);
-        }
-        
-        for (Instance instance : instances)
-            checkDomainFromInstance(instance);
-
-        try {
-            // try a fake instance name
-            connection.getInstance("fakeName");
-            fail("the connection.getInstance call should have thrown an exception");
-        } catch (RESTException r) {
-            // not a failure, this is the expected result
-            assertEquals(r.toString(), 404, r.getStatusCode());
-        }
-    }
-    
     static void checkDomainFromInstance(Instance instance)  throws Exception {
         instance.refresh();
         
-        System.err.println("DDDDD" + " GET DOMAIN");
         Domain domain = instance.getDomain();
-        System.err.println("DDDDD" + " GOT DOMAIN:" + domain.getId());
-        assertNotNull(domain);
-        assertNotNull(domain.getId());
-        assertNotNull(domain.getZooKeeperConnectionString());
-        assertNotNull(domain.getCreationUser());
-        assertTrue(domain.getCreationTime() <= instance.getCreationTime());
+		if (domain != null) {
+			assertNotNull(domain.getId());
+			assertNotNull(domain.getZooKeeperConnectionString());
+			assertNotNull(domain.getCreationUser());
+			assertTrue(domain.getCreationTime() <= instance.getCreationTime());
+		}
         
         checkResourceAllocations(instance.getResourceAllocations(), false);
     }
 
-    @Before
     public void setupJob() throws Exception {
         setupInstance();
-        if (jobId == null) {
-            // avoid clashes with sub-class tests
-            Topology topology = new Topology(getClass().getSimpleName(), 
-                    "JobForRESTApiTest");
+		// avoid clashes with sub-class tests
+		Topology topology = new Topology(getClass().getSimpleName(), "JobForRESTApiTest");
 
-            TStream<Integer> source = topology.periodicSource(() -> (int) (Math.random() * 5000 + 1), 200, TimeUnit.MILLISECONDS);
-            source.invocationName("IntegerPeriodicMultiSource");
-            TStream<Integer> sourceDouble = source.map(doubleNumber());
-            sourceDouble.invocationName("IntegerTransformInteger");
-            @SuppressWarnings("unused")
-            TStream<Integer> sourceDoubleAgain = sourceDouble.isolate().map(doubleNumber());
-            sourceDoubleAgain.invocationName("ZIntegerTransformInteger");
+		TStream<Integer> source = topology.periodicSource(() -> (int) (Math.random() * 5000 + 1), 200,
+				TimeUnit.MILLISECONDS);
+		source.invocationName("IntegerPeriodicMultiSource");
+		TStream<Integer> sourceDouble = source.map(doubleNumber());
+		sourceDouble.invocationName("IntegerTransformInteger");
+		sourceDouble.colocate(source);
+		TStream<Integer> sourceDoubleAgain = sourceDouble.isolate().map(doubleNumber());
+		sourceDoubleAgain.invocationName("ZIntegerTransformInteger");
 
-            if (testType.equals("DISTRIBUTED")) {
-                jobId = StreamsContextFactory.getStreamsContext(StreamsContext.Type.DISTRIBUTED).submit(topology).get()
-                        .toString();
-            } else if (testType.equals("STREAMING_ANALYTICS_SERVICE")) {
-                jobId = StreamsContextFactory.getStreamsContext(StreamsContext.Type.STREAMING_ANALYTICS_SERVICE)
-                        .submit(topology).get().toString();
-            } else {
-                fail("This test should be skipped");
-            }
+		if (testType.equals("DISTRIBUTED")) {
+			jobId = StreamsContextFactory.getStreamsContext(StreamsContext.Type.DISTRIBUTED).submit(topology).get()
+					.toString();
+		} else if (testType.equals("STREAMING_ANALYTICS_SERVICE")) {
+			jobId = StreamsContextFactory.getStreamsContext(StreamsContext.Type.STREAMING_ANALYTICS_SERVICE)
+					.submit(topology).get().toString();
+		} else {
+			fail("This test should be skipped");
+		}
 
-            job = instance.getJob(jobId);
-            job.waitForHealthy(60, TimeUnit.SECONDS);
+		job = instance.getJob(jobId);
+		job.waitForHealthy(60, TimeUnit.SECONDS);
 
-            assertEquals("healthy", job.getHealth());
-        }
+		assertEquals("healthy", job.getHealth());
         System.out.println("jobId: " + jobId + " is setup.");
     }
 
@@ -262,6 +146,8 @@ public class StreamsConnectionTest {
 
     @Test
     public void testJobObject() throws Exception {
+    	setupJob();
+    	
         List<Job> jobs = instance.getJobs();
         // we should have at least one job
         assertTrue(jobs.size() > 0);
@@ -303,44 +189,36 @@ public class StreamsConnectionTest {
         assertEquals(2, pes.size());
         
         checkResourceAllocations(job.getResourceAllocations(), true);
+        
+        validateOperators();
+        validateProcessingElements();
     }
 
     @Test
     public void testCancelSpecificJob() throws Exception {
-        if (job != null) {
-            // cancel the job
-            boolean cancel = job.cancel();
-            assertTrue(cancel == true);
-            // remove these so @After doesn't fail
-            job = null;
-            jobId = null;
-        }
+    	setupJob();
+		// cancel the job
+		boolean cancel = job.cancel();
+		assertTrue(cancel == true);
+		// remove these so @After doesn't fail
+		job = null;
+		jobId = null;
     }
 
-    @SuppressWarnings("deprecation")
     @Test
     public void testNonExistantJob() throws Exception {
+    	setupInstance();
         try {
             // get a non-existant job
-            @SuppressWarnings("unused")
-            Job nonExistantJob = instance.getJob("9999999");
+            instance.getJob("9999999");
             fail("this job number should not exist");
         } catch (RESTException r) {
             assertEquals(r.toString(), 404, r.getStatusCode());
             assertEquals("CDISW5000E", r.getStreamsErrorMessageId());
         }
-
-        // cancel a non-existant jobid
-        // API does not specify if this fails or throws, accept both
-        try {
-            boolean failCancel = connection.cancelJob("9999999");
-            assertTrue(failCancel == false);
-        } catch (RESTException ok) {}
     }
 
-    @Test
-    public void testOperators() throws Exception {
-
+    private void validateOperators() throws Exception {
         List<Operator> operators = job.getOperators();
 
         // there should be 3 operators for this test, ordered by name
@@ -439,8 +317,8 @@ public class StreamsConnectionTest {
         
     }
 
-    @Test
-    public void testProcessingElements() throws Exception {
+    private void validateProcessingElements() throws Exception {
+    	
 
         final List<ProcessingElement> pes = job.getPes();
 
@@ -559,6 +437,8 @@ public class StreamsConnectionTest {
     }
 
     private static void checkResourceAllocation(ResourceAllocation ra, boolean app) throws IOException {
+    	if (ra == null)
+    		return;
         assertEquals("resourceAllocation", ra.getResourceType());
         if (app)
             assertTrue(ra.isApplicationResource());
@@ -577,7 +457,6 @@ public class StreamsConnectionTest {
         assertSame(rai, ra.getInstance());
         
         Resource r = ra.getResource();
-        System.out.println("DDDD:RESOURCE:" + r.getDisplayName());
         assertNotNull(r.getId());
         assertNotNull(r.getDisplayName());
         assertNotNull(r.getIpAddress());       
