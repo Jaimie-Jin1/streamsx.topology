@@ -155,6 +155,9 @@ import streamsx.topology.runtime
 import streamsx.topology.topology
 import streamsx._streams._placement as _placement
 
+import streamsx._streams._version
+__version__ = streamsx._streams._version.__version__
+
 class Invoke(_placement._Placement, exop.ExtensionOperator):
     """
     Declaration of an invocation of an SPL operator in a Topology.
@@ -219,7 +222,8 @@ class Invoke(_placement._Placement, exop.ExtensionOperator):
         if len(self._inputs) == 1:
             return Expression('attribute', name)
         else:
-            return Expression('attribute', stream.oport.name + '.' + name)
+            iport = self._op().inputPorts[self._inputs.index(stream)]
+            return Expression('attribute', iport._alias + '.' + name)
 
     def expression(self, value):
         """SPL expression.

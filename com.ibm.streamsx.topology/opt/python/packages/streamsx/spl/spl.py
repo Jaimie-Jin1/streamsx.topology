@@ -105,9 +105,9 @@ Operator state
 Use of a class allows the operator to be stateful by maintaining state in instance
 attributes across invocations (tuple processing).
 
-.. note::
-    For future compatibility instances of a class should ensure that the object's
-    state can be pickled. See https://docs.python.org/3.5/library/pickle.html#handling-stateful-objects
+When the operator is in a consistent region or checkpointing then it is serialized using `dill`. The default serialization may be modified by using the standard Python pickle mechanism of ``__getstate__`` and ``__setstate__``. This is required if the state includes objects that cannot be serialized, for example file descriptors. For details see See https://docs.python.org/3.5/library/pickle.html#handling-stateful-objects .
+
+If the class has ``__enter__`` and ``__exit__`` context manager methods then ``__enter__`` is called after the instance has been deserialized by `dill`. Thus ``__enter__`` is used to recreate runtime objects that cannot be serialized such as open files or sockets.
 
 Operator initialization & shutdown
 ==================================
@@ -570,6 +570,9 @@ import streamsx.ec as ec
 import streamsx._streams._runtime
 import importlib
 
+import streamsx._streams._version
+__version__ = streamsx._streams._version.__version__
+
 ############################################
 # setup for function inspection
 if sys.version_info.major == 3:
@@ -608,6 +611,37 @@ def _valid_op_parameter(name):
     _valid_identifier(name)
     if name in ['suppress', 'include']:
         raise ValueError("Parameter name {0} is reserved".format(name))
+
+_EXTRACTING=False
+
+def extracting():
+    """Is a module being loaded by ``spl-python-extract``.
+
+    This can be used by modules defining SPL primitive operators
+    using decorators such as :py:class:`@spl.map <map>`, to avoid
+    runtime behavior. Typically not importing modules that are
+    not available locally. The extraction script loads the module
+    to determine method signatures and thus does not invoke any methods.
+
+    For example if an SPL toolkit with primitive operators requires
+    a package ``extras`` and is using ``opt/python/streams/requirements.txt``
+    to include it, then loading it at extraction time can be avoided by::
+
+        from streamsx.spl import spl
+
+        def spl_namespace():
+            return 'myns.extras'
+
+        if not spl.extracting():
+            import extras
+
+        @spl.map():
+        def myextras(*tuple_):
+            return extras.process(tuple_)
+ 
+    .. versionadded:: 1.11
+    """
+    return _EXTRACTING
 
 def pipe(wrapped):
     """

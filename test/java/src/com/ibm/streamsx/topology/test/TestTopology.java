@@ -40,7 +40,9 @@ import com.ibm.streamsx.topology.tester.Condition;
 import com.ibm.streamsx.topology.tester.Tester;
 
 /**
- * Root class for topology tests.
+ * Root class for internal topology tests.
+ * 
+ * This is not a public-api class.
  * 
  */
 public class TestTopology {
@@ -103,6 +105,9 @@ public class TestTopology {
             config.put(ContextProperties.COMPILE_INSTALL_DIR, differentCompile);
             Util.STREAMS_LOGGER.setLevel(Level.INFO);
         }
+        
+        if (System.getProperty("topology.test.SSLVerify") != null)
+            config.put(ContextProperties.SSL_VERIFY, Boolean.getBoolean("topology.test.SSLVerify"));
     }
     
 
@@ -189,7 +194,7 @@ public class TestTopology {
      * @param stream
      * @return
      */
-    public <T,S> TStream<T> addStartupDelay(TStream<T> stream) {
+    public <T> TStream<T> addStartupDelay(TStream<T> stream) {
          
         if (getTesterType() == Type.DISTRIBUTED_TESTER || getTesterType() == Type.STREAMING_ANALYTICS_SERVICE_TESTER) {
             return stream.modify(new InitialDelay<T>(getStartupDelay()*1000L));
@@ -223,6 +228,11 @@ public class TestTopology {
      * In a distributed environment the 
      */
     public boolean complete(Tester tester, Condition<?> endCondition, long timeout, TimeUnit unit) throws Exception {
+        
+        if (isDistributedOrService()) {
+            timeout = getStartupDelay() + unit.toSeconds(timeout);
+            unit = TimeUnit.SECONDS;
+        }
         
         return tester.complete(getTesterContext(), getConfig(), endCondition, timeout, unit);
     }
@@ -365,7 +375,7 @@ public class TestTopology {
         
         Tester tester = output.topology().getTester();
         
-        if (getTesterType() == Type.DISTRIBUTED_TESTER)
+        if (isDistributedOrService())
             seconds += getStartupDelay();
         
         Condition<List<String>> expectedContents = tester.completeAndTestStringOutput(
@@ -428,6 +438,10 @@ public class TestTopology {
     
     /**
      * Return a stream that will only contain unique values from stream.
+     * 
+     * This method is only recommended for test applications as
+     * it maintains an unbounded collection of the unique values
+     * seen on the stream.
      */
     public static <T> TStream<T> uniqueValues(TStream<T> stream) {   	
     	Set<T> seen = new HashSet<>();

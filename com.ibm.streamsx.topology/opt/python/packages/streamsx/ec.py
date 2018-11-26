@@ -110,6 +110,9 @@ import importlib
 import logging
 import sys
 
+import streamsx._streams._version
+__version__ = streamsx._streams._version.__version__
+
 try:
     import _streamsx_ec as _ec
 except ImportError:
@@ -131,6 +134,22 @@ def _is_supported():
         except NotImplementedError:
             pass
     return _State._state is not None and _State._state._supported
+
+def is_active():
+    """Tests is code is active within a IBM Streams exection context.
+ 
+    Returns a true value when called from within a
+    IBM Streams distributed job or standalone execution.
+
+    Can be used to only run code required at runtime, such as importing
+    a module that is only needed at runtime and not topology declaration time.
+
+    Returns:
+        bool: True if running in a IBM Streams context false otherwise.
+
+    .. versionadded:: 1.11
+    """
+    return _is_supported()
 
 def _check():
     if _State._state is None:

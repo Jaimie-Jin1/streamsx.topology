@@ -2,7 +2,7 @@ from streamsx.topology.context import ContextTypes
 from streamsx.topology.topology import *
 from streamsx.topology.tester import Tester
 from streamsx.topology.tester_runtime import _StreamCondition
-from streamsx.topology.consistent import ConsistentRegionConfig
+from streamsx.topology.state import ConsistentRegionConfig
 import streamsx.spl.op as op
 import streamsx.ec as ec
 
@@ -79,8 +79,9 @@ class StatefulAverage(object):
     def __init__(self):
         self.count = 0
     def __call__(self, x):
-        self.count += 1
-        return self.count, float(sum(x))/float(len(x))
+        if x:
+            self.count += 1
+            return self.count, float(sum(x))/float(len(x))
 
 # Due to the timed nature can't check specific values.
 class TimedStatefulAverageChecker(object):

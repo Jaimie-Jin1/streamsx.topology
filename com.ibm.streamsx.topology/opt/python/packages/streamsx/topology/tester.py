@@ -107,7 +107,17 @@ import sys
 
 import streamsx.topology.tester_runtime as sttrt
 
+import streamsx._streams._version
+__version__ = streamsx._streams._version.__version__
+
 _logger = logging.getLogger('streamsx.topology.test')
+
+class _TestConfig(dict):
+    def __init__(self, test, entries=None):
+        super(_TestConfig, self).__init__()
+        self._test = test
+        if entries:
+            self.update(entries)
 
 class Tester(object):
     """Testing support for a Topology.
@@ -171,8 +181,9 @@ class Tester(object):
         run for time using :py:meth:`run_for` to ensure the test completes
 
         Two attributes are set in the test case:
-         * test_ctxtype - Context type the test will be run in.
-         * test_config- Test configuration.
+
+            * test_ctxtype - Context type the test will be run in.
+            * test_config- Test configuration.
 
         Args:
             test(unittest.TestCase): Test case to be set up to run tests using Tester
@@ -184,7 +195,7 @@ class Tester(object):
             raise unittest.SkipTest("Skipped due to no local IBM Streams install")
         Tester._log_env(test, verbose)
         test.test_ctxtype = stc.ContextTypes.STANDALONE
-        test.test_config = {}
+        test.test_config = _TestConfig(test)
 
     @staticmethod
     def get_streams_version(test):
@@ -295,8 +306,9 @@ class Tester(object):
                 `Generating authentication keys for IBM Streams <https://www.ibm.com/support/knowledgecenter/SSCRJU_4.2.1/com.ibm.streams.cfg.doc/doc/ibminfospherestreams-user-security-authentication-rsa.html>`_
 
         Two attributes are set in the test case:
-         * test_ctxtype - Context type the test will be run in.
-         * test_config - Test configuration.
+
+             * test_ctxtype - Context type the test will be run in.
+             * test_config - Test configuration.
 
         Args:
             test(unittest.TestCase): Test case to be set up to run tests using Tester
@@ -316,7 +328,7 @@ class Tester(object):
 
         Tester._log_env(test, verbose)
         test.test_ctxtype = stc.ContextTypes.DISTRIBUTED
-        test.test_config = {}
+        test.test_config = _TestConfig(test)
 
     @staticmethod
     def setup_streaming_analytics(test, service_name=None, force_remote_build=False, verbose=None):
@@ -324,14 +336,16 @@ class Tester(object):
         Set up a unittest.TestCase to run tests using Streaming Analytics service on IBM Cloud.
 
         The service to use is defined by:
-         * VCAP_SERVICES environment variable containing `streaming_analytics` entries.
-         * service_name which defaults to the value of STREAMING_ANALYTICS_SERVICE_NAME environment variable.
+
+            * VCAP_SERVICES environment variable containing `streaming_analytics` entries.
+             * service_name which defaults to the value of STREAMING_ANALYTICS_SERVICE_NAME environment variable.
 
         If VCAP_SERVICES is not set or a service name is not defined, then the test is skipped.
 
         Two attributes are set in the test case:
-         * test_ctxtype - Context type the test will be run in.
-         * test_config - Test configuration.
+
+            * test_ctxtype - Context type the test will be run in.
+            * test_config - Test configuration.
 
         Args:
             test(unittest.TestCase): Test case to be set up to run tests using Tester
@@ -359,7 +373,7 @@ class Tester(object):
             raise unittest.SkipTest("Skipped due to no service name supplied")
 
         Tester._log_env(test, verbose)
-        test.test_config = {'topology.service.name': service_name}
+        test.test_config = _TestConfig(test, {'topology.service.name': service_name})
         if force_remote_build:
             test.test_config['topology.forceRemoteBuild'] = True
 
@@ -515,8 +529,7 @@ class Tester(object):
         The return from `checker` is handled as:
             * ``None`` - The condition requires more tuples to become valid.
             * `true value` - The condition has become valid.
-            * `false value` - The condition has failed. Once a condition has
-                failed it can never become valid.
+            * `false value` - The condition has failed. Once a condition has failed it can never become valid.
 
         Thus `checker` is typically stateful and allows ensuring that
         condition becomes valid from a set of input tuples. For example
@@ -661,6 +674,20 @@ class Tester(object):
              ``STREAMS_USERNAME`` and ``STREAMS_PASSWORD`` to define
              the Streams user.
         """
+        if config is None:
+            config = {}
+        config['topology.alwaysCollectLogs'] = always_collect_logs
+
+        # Look for streamsx.testing plugins
+        # Each action that plugin attached to the test is
+        # called passing Tester, TestCase, context type and config
+        if isinstance(config, _TestConfig):
+            test_ = config._test
+            actions = test_._streamsx_testing_actions if hasattr(test_, '_streamsx_testing_actions') else None
+            if actions:
+                for action in actions:
+                    _logger.debug("Adding nose plugin action %s to topology %s.", str(action), self.topology.name)
+                    action(self, test_, ctxtype, config)
 
         # Add the conditions into the graph as sink operators
         _logger.debug("Adding conditions to topology %s.", self.topology.name)
@@ -671,15 +698,13 @@ class Tester(object):
 
         # Standalone uses --kill-after parameter.
         if self._run_for and stc.ContextTypes.STANDALONE != ctxtype:
-            run_cond = sttrt._RunFor(self._run_for)
+            rfn = 'run_for_' + str(int(self._run_for)) + 's'
+            run_cond = sttrt._RunFor(self._run_for, rfn)
             self.add_condition(None, run_cond)
-            cond_run_time = self.topology.source(run_cond, name="TestRunTime")
+            cond_run_time = self.topology.source(run_cond, name=rfn)
             cond_run_time.category = 'Tester'
             cond_run_time._op()._layout(hidden=True)
 
-        if config is None:
-            config = {}
-        config['topology.alwaysCollectLogs'] = always_collect_logs
 
         _logger.debug("Starting test topology %s context %s.", self.topology.name, ctxtype)
 
@@ -733,7 +758,8 @@ class Tester(object):
             # Supply a default StreamsConnection object with SSL verification disabled, because the default
             # streams server is not shipped with a valid SSL certificate
             self.streams_connection = StreamsConnection(username, password)
-            self.streams_connection.session.verify = False
+            if ConfigParams.SSL_VERIFY in config:
+                self.streams_connection.session.verify = config[ConfigParams.SSL_VERIFY]
             config[ConfigParams.STREAMS_CONNECTION] = self.streams_connection
         sjr = stc.submit(stc.ContextTypes.DISTRIBUTED, self.topology, config)
         self.submission_result = sjr
@@ -952,8 +978,13 @@ class _ConditionChecker(object):
             if not start:
                 return False
         ok_pes = 0
-        for pe in self.job.get_pes():
+        pes = self.job.get_pes()
+        if verbose:
+            _logger.info("Job %s health:%s PE count:%d", self.job.name, self.job.health, len(pes))
+        for pe in pes:
             if pe.launchCount == 0:
+                if verbose:
+                    _logger.warn("PE %s launch count == 0", pe.id)
                 continue # not a test failure, but not an ok_pe either
             if pe.launchCount > 1:
                 if verbose or start:
@@ -965,6 +996,8 @@ class _ConditionChecker(object):
                 if not start:
                     return False
             else:
+                if verbose:
+                    _logger.info("PE %s health: %s", pe.id, pe.health)
                 ok_pes += 1
         return True if ok_ else ok_pes
 

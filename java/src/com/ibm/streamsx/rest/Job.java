@@ -7,7 +7,9 @@ package com.ibm.streamsx.rest;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -270,14 +272,35 @@ public class Job extends Element {
      */
     public void waitForHealthy(long timeout, TimeUnit unit) throws TimeoutException, InterruptedException, IOException {
         final long start =  System.currentTimeMillis();
-        final long end = start + unit.toMillis(timeout);
+        long end = start + unit.toMillis(timeout);
         long sleepTime = 200;
+        Set<String> healthyPes = new HashSet<>();
+        int healthyPeCount = 0;
+
         while (!"healthy".equals(getHealth())) {
             
             long now = System.currentTimeMillis();
             
             if (now > end)
                 throw new TimeoutException();
+                                    
+            for (ProcessingElement pe : getPes()) {
+                String id = pe.getId();
+                if ("healthy".equals(pe.getHealth())) {
+                    if (!healthyPes.contains(id))
+                        healthyPes.add(id);
+                }
+            }
+            if (healthyPes.size() > healthyPeCount) {
+                // making progress - delay the timeout.
+                now = System.currentTimeMillis();
+                if (now > end)
+                    end = now + (2 * sleepTime);
+                else
+                    end += (2 * sleepTime);
+
+                healthyPeCount = healthyPes.size();
+            }
             
             // backoff if it seems like it is unlikely to start
             if ((now - start) > 5000) {
@@ -290,9 +313,18 @@ public class Job extends Element {
     }
     
     /**
-     * TODO
-     * @param directory
-     * @return
+     * Retrieves the application log and trace files of the job
+     * and saves them as a compressed tar file.
+     * <BR>
+     * The resulting file name is {@code job_<id>_<timestamp>.tar.gz} where {@code id} is the
+     * job identifier and {@code timestamp} is the number of seconds since the Unix epoch,
+     * for example {@code job_355_1511995995.tar.gz}.
+     * 
+     * @param directory a valid directory in which to save the archive.
+     * Defaults to the current directory.
+
+     * @return  File obhject representing the created tar file, or {@code null} if retrieving a job's
+     * logs is not supported in the version of IBM Streams to which the job is submitted.
      * @throws IOException
      * 
      * @since 1.11
@@ -302,7 +334,7 @@ public class Job extends Element {
     		return null;
     	
     	File fn;
-    	String lfn = "job_" + this.id + "_" + (System.currentTimeMillis()/1000L) + ".tgz";
+    	String lfn = "job_" + this.id + "_" + (System.currentTimeMillis()/1000L) + ".tar.gz";
     	if (directory == null) {
     		fn = new File(lfn);
     	} else {

@@ -43,6 +43,9 @@ import requests
 from pprint import pformat
 import streamsx.topology.context
 
+import streamsx._streams._version
+__version__ = streamsx._streams._version.__version__
+
 from streamsx import st
 from .rest_primitives import (Domain, Instance, Installation, RestResource, _StreamsRestClient, StreamingAnalyticsService, _streams_delegator,
     _exact_resource, _IAMStreamsRestClient, _IAMConstants)
@@ -140,7 +143,8 @@ class StreamsConnection:
         Returns:
             :py:obj:`list` of :py:class:`~.rest_primitives.Domain`: List of available domains
         """
-        return self._get_elements('domains', Domain)
+        if hasattr(self, 'domains'):
+            return self._get_elements('domains', Domain)
 
     def get_domain(self, id):
         """Retrieves available domain matching a specific domain ID
@@ -154,8 +158,9 @@ class StreamsConnection:
         Raises:
             ValueError: No matching domain exists.
         """
-        return self._get_element_by_id('domains', Domain, id)
-
+        if hasattr(self, 'domains'):
+            return self._get_element_by_id('domains', Domain, id)
+  
     def get_instances(self):
         """Retrieves available instances.
 

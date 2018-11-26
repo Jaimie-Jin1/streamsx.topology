@@ -32,7 +32,12 @@ import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.objectCreate
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.stringArray;
 
 import java.io.IOException;
+import java.text.Collator;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -408,16 +413,21 @@ class OperatorGenerator {
                 sb.append("; ");
 
             AtomicBoolean firstStream = new AtomicBoolean(true);
+            String[] firstStreamName = new String[1];
             stringArray(input, "connections", name -> {
                 if (!firstStream.getAndSet(false))
                     sb.append(", ");
+                else
+                    firstStreamName[0] = name;
                 sb.append(getSPLCompatibleName(name));
             });
             
             String alias = jstring(input, "alias");
             if (alias != null) {
-                sb.append(" as ");
-                sb.append(getSPLCompatibleName(alias));
+                if (!alias.equals(firstStreamName[0])) {
+                    sb.append(" as ");
+                    sb.append(getSPLCompatibleName(alias));
+                }
             }
         });
 
@@ -760,10 +770,20 @@ class OperatorGenerator {
                 return jstring(hostPoolDef, "name");
             }
         }
+        
+        // Sort the resource tags into order and use that as the basis for the name.
+        List<String> sorted = new ArrayList<>(uniqueResourceTags);
+        Collections.sort(sorted, Collator.getInstance(Locale.US));
+        StringBuilder sb = new StringBuilder();
+        sb.append("HostPool");
+        for (String tag : sorted) {
+        	sb.append('_');
+        	sb.append(getSPLCompatibleName(tag));
+        }
+        String hostPool = sb.toString();
 
         JsonObject hostPoolDef = new JsonObject();
-        String hostPool;
-        hostPoolDef.addProperty("name", hostPool = "__jaaHostPool" + hostPools.size());
+        hostPoolDef.addProperty("name", hostPool);
         JsonArray rta = new JsonArray();
         for (String tag : uniqueResourceTags)
             rta.add(new JsonPrimitive(tag));

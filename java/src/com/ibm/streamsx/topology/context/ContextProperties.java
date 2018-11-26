@@ -1,8 +1,11 @@
 /*
 # Licensed Materials - Property of IBM
-# Copyright IBM Corp. 2015  
+# Copyright IBM Corp. 2015,2018
  */
 package com.ibm.streamsx.topology.context;
+
+import com.ibm.streamsx.rest.Instance;
+import com.ibm.streamsx.rest.StreamsConnection;
 
 /**
  * Properties that can be specified when submitting the topology to a context.
@@ -122,4 +125,46 @@ public interface ContextProperties {
      * Otherwise, an error will be thrown.
      */
     String FORCE_REMOTE_BUILD = "topology.forceRemoteBuild";
+    
+    /**
+     * Connection to IBM Streams REST api to be used for submission.
+     * <BR>
+     * Only supported for {@link StreamsContext.Type#DISTRIBUTED distributed}
+     * and {@link StreamsContext.Type#STREAMING_ANALYTICS_SERVICE Streaming Analytics}
+     * contexts.
+     * <P>
+     * The value in the configuration map must be an instance of
+     * {@link StreamsConnection} and will be used for job submission.
+     * </P>
+     * <P>
+     * For {@link StreamsContext.Type#DISTRIBUTED distributed} contexts the instance
+     * to use is defined by either:
+     * <UL>
+     * <LI>the environment variable {@code STREAMS_INSTANCE_ID} if set</LI>
+     * <LI>or the first instance returned by {@link StreamsConnection#getInstances()}.
+     * It is recommended that this is only used when only a single instance is available
+     * through the connection.
+     * </UL>
+     * </P>
+     * 
+     * @since 1.11
+     */
+    String STREAMS_CONNECTION = "topology.streamsConnection";
+    
+    /**
+     * Set SSL certification verification state.
+     * 
+     * If set as {@code true} (the default) then SSL certificate verification
+     * is enabled when using a REST connection to a IBM Streams distributed instance.
+     * <BR>
+     * Otherwise if set to {@code false} then SSL certification verification does
+     * not occur. This is useful for test distributed instances or the IBM Streams
+     * Quick Start edition where a self-signed certificate is used.
+     * 
+     * If a connection is passed in to a submission context using
+     * {@link #STREAMS_CONNECTION} then this value is ignored.
+     * 
+     * @since 1.11
+     */
+    String SSL_VERIFY = "topology.SSLVerify";
 }

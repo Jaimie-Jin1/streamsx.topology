@@ -35,6 +35,8 @@ import time
 
 _logger = logging.getLogger('streamsx.topology.test')
 
+_STANDALONE_FAILED = False
+
 class Condition(object):
     """A condition for testing.
 
@@ -107,6 +109,8 @@ class _FunctionalCondition(Condition):
         self.valid = False
         self._fail = True
         if (ec.is_standalone()):
+            global _STANDALONE_FAILED
+            _STANDALONE_FAILED = True
             raise AssertionError("Condition:{}: FAILED".format(self.name))
 
     def __getstate__(self):
@@ -135,9 +139,12 @@ class _FunctionalCondition(Condition):
          
     def __exit__(self, exc_type, exc_value, traceback):
         if not self._fail and not self.valid:
-            _logger.warning("Condition:%s: NOT VALID at __exit__.", self.name)
+            _logger.warning("Condition:%s: NOT VALID.", self.name)
             
-        if ec.is_standalone():
+        # Force a non-zero return code in standalone
+        # if a condition did not become valid
+        global _STANDALONE_FAILED
+        if ec.is_standalone() and not _STANDALONE_FAILED:
             if exc_type is None and not self._valid:
                 raise AssertionError("Condition:{}: NOT VALID.".format(self.name))
 
@@ -243,7 +250,7 @@ class _UnorderedStreamContents(_StreamContents):
         """
         tuple_ = self.received[-1]
         if not tuple_ in self.expected:
-            _logger.error("Condition:%s: Tuple count %d Received unexpected tuple %s", self.name, len(self.receivied), tuple_)
+            _logger.error("Condition:%s: Tuple count %d Received unexpected tuple %s", self.name, len(self.received), tuple_)
             self.fail()
             return True
         if len(self.expected) == len(self.received):
@@ -305,19 +312,20 @@ class _Resetter(Condition):
         
 
 class _RunFor(_FunctionalCondition):
-    def __init__(self, duration):
-        super(_RunFor, self).__init__("TestRunTime")
+    def __init__(self, duration, name):
+        super(_RunFor, self).__init__(name)
         self.duration = duration
+        self.start = None
 
     def __iter__(self):
-        start = time.time()
+        self.start = time.time()
         while True:
             time.sleep(1)
-            if (time.time() - start) >= self.duration:
+            if (time.time() - self.start) >= self.duration:
                 self.valid = True
                 return
             self._show_progress()
             yield None
 
     def __str__(self):
-        return "Condition:{}: Run time duration:{} running:{}".format(self.name, str(self.duration), str(time.time() - start))
+        return "Condition:{}: Duration:{} running:{}".format(self.name, str(self.duration), str(time.time() - self.start) if self.start else 0)

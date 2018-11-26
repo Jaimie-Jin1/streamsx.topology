@@ -11,7 +11,7 @@ import codecs
 
 from streamsx.topology.topology import *
 from streamsx.topology.tester import Tester
-import streamsx.ec as ec
+import streamsx.ec
 
 def _trc_msg_direct(level):
     atm = (level, "direct _ec message:" + str(level*77), "A1,B2,python", "MyFile.py", "MyFunc", 4242)
@@ -47,7 +47,7 @@ def _log_msg(msg):
     print("Current Stream log logger level:", ctl, logging.getLevelName(ctl))
 
 def read_config_file(name):
-    path = os.path.join(ec.get_application_directory(), 'etc', name)
+    path = os.path.join(streamsx.ec.get_application_directory(), 'etc', name)
     with codecs.open(path, encoding='utf-8') as f:
         return f.read()
 
@@ -70,7 +70,7 @@ class EcFilter(object):
         self.val = val
         self.ev = None
 
-    def __call__(self, tuple):
+    def __call__(self, tuple_):
         return self.val == self.ev
 
     def __enter__(self):
@@ -84,8 +84,8 @@ class EcMap(object):
         self.val = val
         self.ev = None
 
-    def __call__(self, tuple):
-        return tuple + (self.val, self.ev)
+    def __call__(self, tuple_):
+        return tuple_ + (self.val, self.ev)
 
     def __enter__(self):
         self.ev = 'EcMap_enter'
@@ -107,6 +107,27 @@ class EcForEach(object):
     def __exit__(self, a, b, c):
         pass
 
+class EcDuplicateMetric(object):
+    def __enter__(self):
+        self.m1 = streamsx.ec.CustomMetric(self, name='METRIC1', initialValue=37)
+        if int(self.m1.value) != 37:
+            raise ValueError("Expected initial 37 got " + int(self.m1.value))
+        self.m1 = streamsx.ec.CustomMetric(self, name='METRIC1', initialValue=99)
+        if int(self.m1.value) != 37:
+            raise ValueError("Expected 37 got " + int(self.m1.value))
+
+        try:
+            streamsx.ec.CustomMetric(self, name='METRIC1', kind='Gauge')
+            self.okerror = False
+        except ValueError as e:
+            self.okerror = True
+
+    def __exit__(self, a, b, c):
+        pass
+
+    def __call__(self, tuple_):
+        return tuple_ + (self.m1.name,self.okerror)
+
 def get_sys_argv():
     import sys as sys_ec_test
     return sys_ec_test.argv
@@ -118,13 +139,16 @@ class TestEc(unittest.TestCase):
       Tester.setup_standalone(self)
 
   def test_enter_called(self):
+      self.assertFalse(streamsx.ec.is_active())
       topo = Topology()
       s = topo.source(EcSource('A211'))
       s = s.filter(EcFilter('F243'))
+      s = s.filter(lambda _ : streamsx.ec.is_active())
       s.for_each(EcForEach())
       s = s.map(EcMap('M523'))
+      s = s.map(EcDuplicateMetric())
       tester = Tester(topo)
-      tester.contents(s, [('A211', 'EcSource_enter', 'M523', 'EcMap_enter')])
+      tester.contents(s, [('A211', 'EcSource_enter', 'M523', 'EcMap_enter', 'METRIC1', True)])
       tester.test(self.test_ctxtype, self.test_config)
 
   def test_sys_argv(self):
@@ -147,7 +171,7 @@ class TestEc(unittest.TestCase):
       self.assertEqual('etc/' + bfn, rtpath)
 
       s = topo.source(['A'])
-      s = s.filter(lambda x : os.path.isdir(ec.get_application_directory()))
+      s = s.filter(lambda x : os.path.isdir(streamsx.ec.get_application_directory()))
       s = s.map(lambda x : read_config_file(bfn))
 
       tester = Tester(topo)

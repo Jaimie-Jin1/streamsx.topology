@@ -25,6 +25,9 @@
 #include "splpy_general.h"
 #include "splpy_setup.h"
 
+#define SPLPY_SH_ASPECT "python,state"
+#define SPLPY_ASPECT "python"
+
 namespace streamsx {
   namespace topology {
 
@@ -79,7 +82,6 @@ class SplpyOp {
           SplpyGIL lock;
 
           clearCallable();
-
           Py_CLEAR(opc_);
 
           SplpyGeneral::flush_PyErrPyOut();
@@ -108,11 +110,12 @@ class SplpyOp {
       }
       void clearCallable() {
         if (callable_) {
+             PyObject *cleared = callable_;
+             callable_ = NULL;
              // Exit the context manager and release it
              // THe function call steals the operator's reference
              SplpyGeneral::callVoidFunction(
-               "streamsx._streams._runtime", "_call_exit", callable_, NULL);
-             callable_ = NULL;
+               "streamsx._streams._runtime", "_call_exit", cleared, NULL);
         }
       }
 
@@ -128,7 +131,7 @@ class SplpyOp {
        *   a metric that keeps track of exceptions suppressed
        *   by __exit__
        */
-      void setup(bool stateful) {
+      void setup(bool needStateHandler) {
           if (PyObject_HasAttrString(callable_, "_streamsx_ec_context")) {
               PyObject *hasContext = PyObject_GetAttrString(callable_, "_streamsx_ec_context");
               if (PyObject_IsTrue(hasContext)) {
@@ -142,23 +145,25 @@ class SplpyOp {
               Py_DECREF(hasContext);
           }
 
-          if (stateful)
+          if (needStateHandler)
               setupStateHandler();
       }
 
       /**
        * Actions for a Python operator on prepareToShutdown
        * Flush any pending output.
-       * Note we do not interact with the callable here
+       * Note in distributed we do not interact with the callable here
        * as it may still be needed for concurrent tuple
        * processing. The callable is shutdown and its __exit__
        * method called when this object's destructor is called.
-       * This means the mutex in the operator is not required
-       * when calling this function.
       */
       void prepareToShutdown() {
           SplpyGIL lock;
           SplpyGeneral::flush_PyErrPyOut();
+
+          if (op()->getPE().isStandalone()) {
+              clearCallable();
+          }
       }
 
       int exceptionRaised(const SplpyExceptionInfo& exInfo) {
@@ -192,22 +197,18 @@ class SplpyOp {
         assert(!stateHandler);
 
         if (op()->getContext().isCheckpointingOn())
-          SPLAPPTRC(L_DEBUG, "checkpointing enabled", "python");
-        else
-          SPLAPPTRC(L_DEBUG, "checkpointing disabled", "python");
+          SPLAPPTRC(L_DEBUG, "checkpointing enabled", SPLPY_SH_ASPECT);
 
         bool consistentRegion = NULL != op()->getContext().getOptionalContext(CONSISTENT_REGION);
         if (consistentRegion)
-          SPLAPPTRC(L_DEBUG, "consistent region enabled", "python");
-        else
-          SPLAPPTRC(L_DEBUG, "consistent region disabled", "python");
+          SPLAPPTRC(L_DEBUG, "consistent region enabled", SPLPY_SH_ASPECT);
 
         // Save the initial callable.
         SplpyGIL lock;
         Py_INCREF(callable());
         PyObject *pickledCallable = SplpyGeneral::callFunction("dill", "dumps", callable(), NULL);
 
-        SPLAPPTRC(L_DEBUG, "Creating state handler", "python");
+        SPLAPPTRC(L_DEBUG, "Creating state handler", SPLPY_SH_ASPECT);
         // pickledCallable reference stolen here.
         stateHandler = new SplpyOpStateHandlerImpl(this, pickledCallable);
 
@@ -226,6 +227,7 @@ class SplpyOp {
       }
 
       void checkpoint(SPL::Checkpoint & ckpt) {
+          SPLAPPTRC(L_DEBUG, "Op-checkpoint:" << (stateHandler != NULL), SPLPY_SH_ASPECT);
         if (stateHandler) {
           ckpts_->incrementValue();
           stateHandler->checkpoint(ckpt);
@@ -282,7 +284,7 @@ class SplpyOp {
  }
 
  void SplpyOpStateHandlerImpl::checkpoint(SPL::Checkpoint & ckpt) {
-   SPLAPPTRC(L_DEBUG, "checkpoint", "python");
+   SPLAPPTRC(L_DEBUG, "checkpoint-callable: enter", SPLPY_SH_ASPECT);
    SPL::blob bytes;
    {
      SplpyGIL lock;
@@ -294,23 +296,24 @@ class SplpyOp {
      pySplValueFromPyObject(bytes, ret);
      Py_DECREF(ret);
    }
+   SPLAPPTRC(L_DEBUG, "checkpoint-callable: dilled callable: bytes:" << bytes.getSize(), SPLPY_SH_ASPECT);
    ckpt << bytes;
-   SPLAPPTRC(L_TRACE, "exit checkpoint", "python");
+   SPLAPPTRC(L_DEBUG, "checkpoint-callable: exit", SPLPY_SH_ASPECT);
  }
 
  void SplpyOpStateHandlerImpl::reset(SPL::Checkpoint & ckpt) {
-   SPLAPPTRC(L_DEBUG, "reset", "python");
+   SPLAPPTRC(L_DEBUG, "reset-callable: enter", SPLPY_SH_ASPECT);
+
+   // Restore the callable from an spl blob
+   SPL::blob bytes;
+   ckpt >> bytes;
+
+   SPLAPPTRC(L_DEBUG, "reset-callable: read data: bytes:" << bytes.getSize(), SPLPY_SH_ASPECT);
 
    SplpyGIL lock;
 
    // Release the old callable
    op->clearCallable();
-
-   SPL::blob bytes;
-   Py_BEGIN_ALLOW_THREADS
-   // Restore the callable from  an spl blob
-   ckpt >> bytes;
-   Py_END_ALLOW_THREADS
 
    PyObject * pickle = pySplValueToPyObject(bytes);
    PyObject * callable = call(loads, pickle);
@@ -322,11 +325,11 @@ class SplpyOp {
  
    // Switch to newly unpickled callable.
    op->setCallable(callable); // reference to ret stolen by op
-
+   SPLAPPTRC(L_DEBUG, "reset-callable: exit", SPLPY_SH_ASPECT);
  }
 
  void SplpyOpStateHandlerImpl::resetToInitialState() {
-   SPLAPPTRC(L_DEBUG, "resetToInitialState", "python");
+   SPLAPPTRC(L_DEBUG, "resetToInitialState-callable: enter", SPLPY_SH_ASPECT);
    SplpyGIL lock;
 
    // Release the old callable
@@ -339,6 +342,7 @@ class SplpyOp {
    }
 
    op->setCallable(initialCallable);
+   SPLAPPTRC(L_DEBUG, "resetToInitialState-callable: exit", SPLPY_SH_ASPECT);
  }
 
  // Call a python callable with a single argument

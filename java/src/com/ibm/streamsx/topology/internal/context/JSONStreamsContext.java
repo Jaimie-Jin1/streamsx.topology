@@ -1,9 +1,10 @@
 /*
 # Licensed Materials - Property of IBM
-# Copyright IBM Corp. 2015  
+# Copyright IBM Corp. 2015,2018
  */
 package com.ibm.streamsx.topology.internal.context;
 
+import static com.ibm.streamsx.topology.context.ContextProperties.STREAMS_CONNECTION;
 import static com.ibm.streamsx.topology.context.ContextProperties.SUBMISSION_PARAMS;
 import static com.ibm.streamsx.topology.context.ContextProperties.TRACING_LEVEL;
 import static com.ibm.streamsx.topology.context.JobProperties.CONFIG;
@@ -28,10 +29,13 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import com.ibm.streamsx.topology.Topology;
+import com.ibm.streamsx.topology.context.ResultProperties;
+import com.ibm.streamsx.topology.context.remote.RemoteContext;
 import com.ibm.streamsx.topology.internal.context.remote.RemoteContexts;
+import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 import com.ibm.streamsx.topology.internal.gson.JSON4JBridge;
-import com.ibm.streamsx.topology.internal.streams.JobConfigOverlay;
 import com.ibm.streamsx.topology.internal.messages.Messages;
+import com.ibm.streamsx.topology.internal.streams.JobConfigOverlay;
 import com.ibm.streamsx.topology.jobconfig.JobConfig;
 
 public abstract class JSONStreamsContext<T> extends StreamsContextImpl<T> {
@@ -68,7 +72,13 @@ public abstract class JSONStreamsContext<T> extends StreamsContextImpl<T> {
      */
     @Override
     public final Future<T> submit(Topology app, Map<String, Object> config) throws Exception {
-        return _submit(new AppEntity(app, new HashMap<>(config)));
+    	AppEntity entity = new AppEntity(app, new HashMap<>(config));
+        Future<T> result = _submit(entity);
+        
+        // An app must request the submission results before we add them.
+        if (config.containsKey(ResultProperties.JOB_SUBMISSION) && entity.submission.has(RemoteContext.SUBMISSION_RESULTS))
+        	config.put(ResultProperties.JOB_SUBMISSION, GsonUtilities.jobject(entity.submission, RemoteContext.SUBMISSION_RESULTS));
+        return result;
     }
     
     protected Future<T> _submit(AppEntity entity) throws Exception {
@@ -120,7 +130,7 @@ public abstract class JSONStreamsContext<T> extends StreamsContextImpl<T> {
         deploy.addProperty("contextType", this.getType().name());
         
         submission.add(DEPLOY,deploy);
-        submission.add(SUBMISSION_GRAPH, entity.app.builder()._complete());
+        submission.add(RemoteContext.SUBMISSION_GRAPH, entity.app.builder()._complete());
         
         entity.submission = submission;
     }
@@ -159,7 +169,7 @@ public abstract class JSONStreamsContext<T> extends StreamsContextImpl<T> {
         // Keys handled by Job Config overlays
         
         // ContextProperties
-        Collections.addAll(CONFIG_SKIP_KEYS, TRACING_LEVEL, SUBMISSION_PARAMS);
+        Collections.addAll(CONFIG_SKIP_KEYS, TRACING_LEVEL, SUBMISSION_PARAMS, STREAMS_CONNECTION);
         
         // JobProperties
         Collections.addAll(CONFIG_SKIP_KEYS, CONFIG, NAME, GROUP, DATA_DIRECTORY,

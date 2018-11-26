@@ -26,7 +26,6 @@ except (ImportError, NameError):
     pass
 from future.builtins import *
 
-from streamsx import rest, rest_primitives
 import logging
 import os
 import os.path
@@ -38,6 +37,11 @@ import codecs
 import tempfile
 import copy
 import time
+
+import streamsx.rest
+import streamsx.rest_primitives
+import streamsx._streams._version
+__version__ = streamsx._streams._version.__version__
 
 logger = logging.getLogger('streamsx.topology.context')
 
@@ -214,7 +218,8 @@ class _BaseSubmitter(object):
         self.results_file = _file.name
         logger.debug("Results file created at " + _file.name)
 
-        self.config[ConfigParams.STREAMS_CONNECTION] = sc
+        if sc is not None:
+            self.config[ConfigParams.STREAMS_CONNECTION] = sc
         return fj
 
     def _create_json_file(self, fj):
@@ -301,7 +306,7 @@ class _StreamingAnalyticsSubmitter(_BaseSubmitter):
         self._service_name = self._config().get(ConfigParams.SERVICE_NAME)
 
         if self._streams_connection is not None:
-            if not isinstance(self._streams_connection, rest.StreamingAnalyticsConnection):
+            if not isinstance(self._streams_connection, streamsx.rest.StreamingAnalyticsConnection):
                 raise ValueError("config must contain a StreamingAnalyticsConnection object when submitting to "
                                  "{} context".format(ctxtype))
 
@@ -331,15 +336,15 @@ class _StreamingAnalyticsSubmitter(_BaseSubmitter):
 
     def streams_connection(self):
         if self._streams_connection is None:
-            self._streams_connection = rest.StreamingAnalyticsConnection(self._vcap_services, self._service_name)
+            self._streams_connection = streamsx.rest.StreamingAnalyticsConnection(self._vcap_services, self._service_name)
         return self._streams_connection
 
     def _augment_submission_result(self, submission_result):
-        vcap = rest._get_vcap_services(self._vcap_services)
-        credentials = rest._get_credentials(vcap, self._service_name)
+        vcap = streamsx.rest._get_vcap_services(self._vcap_services)
+        credentials = streamsx.rest._get_credentials(vcap, self._service_name)
         
-        if rest_primitives._IAMConstants.V2_REST_URL in credentials:
-            instance_id = credentials[rest_primitives._IAMConstants.V2_REST_URL].split('streaming_analytics/', 1)[1]
+        if streamsx.rest_primitives._IAMConstants.V2_REST_URL in credentials:
+            instance_id = credentials[streamsx.rest_primitives._IAMConstants.V2_REST_URL].split('streaming_analytics/', 1)[1]
         else:
             instance_id = credentials['jobs_path'].split('/service_instances/', 1)[1].split('/', 1)[0]
         submission_result['instanceId'] = instance_id
@@ -353,7 +358,7 @@ class _StreamingAnalyticsSubmitter(_BaseSubmitter):
     def _get_java_env(self):
         "Pass the VCAP through the environment to the java submission"
         env = super(_StreamingAnalyticsSubmitter, self)._get_java_env()
-        vcap = rest._get_vcap_services(self._vcap_services)
+        vcap = streamsx.rest._get_vcap_services(self._vcap_services)
         env['VCAP_SERVICES'] = json.dumps(vcap)
         return env
 
@@ -383,11 +388,23 @@ class _DistributedSubmitter(_BaseSubmitter):
 
     def streams_connection(self):
         if self._streams_connection is None:
-            self._streams_connection = rest.StreamsConnection(self.username, self.password)
+            self._streams_connection = streamsx.rest.StreamsConnection(self.username, self.password)
         return self._streams_connection
 
+    def _get_java_env(self):
+        "Set env vars from connection if set"
+        env = super(_DistributedSubmitter, self)._get_java_env()
+        if self._streams_connection is not None:
+            sc = self._streams_connection
+            env.pop('STREAMS_DOMAIN_ID', None)
+            env.pop('STREAMS_USERNAME', None)
+            env.pop('STREAMS_PASSWORD', None)
+            env['STREAMS_REST_URL'] = sc.resource_url
+            env['STREAMS_USERNAME'] = sc.rest_client._username
+            env['STREAMS_PASSWORD'] = sc.rest_client._password
+        return env
+
     def _augment_submission_result(self, submission_result):
-        submission_result['instanceId'] = os.environ.get('STREAMS_INSTANCE_ID', 'StreamsInstance')
         # If we have the information to create a StreamsConnection, do it
         if not ((self.username is None or self.password is None) and
                         self.config.get(ConfigParams.STREAMS_CONNECTION) is None):
@@ -681,6 +698,17 @@ class ConfigParams(object):
     STREAMS_CONNECTION = 'topology.streamsConnection'
     """
     Key for a :py:class:`StreamsConnection` object for connecting to a running IBM Streams instance.
+    """
+    SSL_VERIFY = 'topology.SSLVerify'
+    """
+    Key for the SSL verification value passed to `requests` as its ``verify``
+    option for distributed contexts. By default set to `True`.
+
+    .. note:: Only ``True`` or ``False`` is supported. Behaviour is undefined
+        when passing a path to a CA_BUNDLE file or directory with
+        certificates of trusted CAs.
+
+    .. versionadded: 1.11
     """
     SERVICE_DEFINITION = 'topology.service.definition'
     """Streaming Analytics service definition.
